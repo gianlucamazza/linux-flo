@@ -375,6 +375,7 @@ static int jdi_panel_probe(struct mipi_dsi_device *dsi)
 	mipi_dsi_set_drvdata(dsi, jdi);
 
 	jdi->dsi = dsi;
+	jdi->base.prepare_prev_first = true;
 
 	ret = jdi_panel_add(jdi);
 	if (ret < 0)
