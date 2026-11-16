@@ -235,9 +235,18 @@ static int dsi_pll_28nm_clk_determine_rate(struct clk_hw *hw,
 					   struct clk_rate_request *req)
 {
 	struct dsi_pll_28nm *pll_28nm = to_pll_28nm(hw);
+	unsigned long step = 2 * (VCO_REF_CLK_RATE / VCO_PREF_DIV_RATIO);
 
 	req->rate = clamp_t(unsigned long, req->rate,
 			    pll_28nm->phy->cfg->min_pll_rate, pll_28nm->phy->cfg->max_pll_rate);
+
+	/*
+	 * The feedback divider programmed by dsi_pll_28nm_clk_set_rate() is
+	 * an integer, so the VCO can only run at multiples of twice the
+	 * pre-divided reference clock. Report the rate that will actually be
+	 * generated, so that consumers derive their rates from it.
+	 */
+	req->rate = rounddown(req->rate, step);
 
 	return 0;
 }
