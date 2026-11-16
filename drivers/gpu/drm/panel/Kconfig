@@ -393,6 +393,19 @@ config DRM_PANEL_JDI_LT070ME05000
 	  The panel has a 1200(RGB)×1920 (WUXGA) resolution and uses
 	  24 bit per pixel.
 
+config DRM_PANEL_JDI_LT070ME05000_KUNIT_TEST
+	bool "Test JDI LT070ME05000 brightness protocol" if !KUNIT_ALL_TESTS
+	depends on DRM=y && KUNIT=y && OF && BACKLIGHT_CLASS_DEVICE=y
+	select DRM_MIPI_DSI
+	select DRM_PANEL_JDI_LT070ME05000
+	default KUNIT_ALL_TESTS
+	help
+	  Enable KUnit tests for the JDI LT070ME05000 panel brightness
+	  protocol. They send DCS 0x51/0x52 transfers through a recording
+	  MIPI DSI host to check 8-bit writes, single-byte reads, init
+	  programming and mode-flag restoration after errors.
+	  Say N unless you are developing this panel driver.
+
 config DRM_PANEL_JDI_R63452
 	tristate "JDI R63452 Full HD DSI panel"
 	depends on OF
