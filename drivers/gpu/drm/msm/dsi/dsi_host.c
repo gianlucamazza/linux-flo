@@ -1216,14 +1216,17 @@ static void dsi_set_tx_power_mode(int mode, struct msm_dsi_host *msm_host)
 	dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL, data);
 }
 
-static void dsi_wait4video_done(struct msm_dsi_host *msm_host)
+static int dsi_wait4video_done(struct msm_dsi_host *msm_host)
 {
 	u32 ret = 0;
 	struct device *dev = &msm_host->pdev->dev;
 
-	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_VIDEO_DONE, 1);
+	/* DSI v2 streaming does not signal VIDEO_DONE; use the MDP frame IRQ. */
+	if (msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_V2)
+		return msm_dsi_manager_wait_for_vblank(msm_host->id);
 
 	reinit_completion(&msm_host->video_comp);
+	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_VIDEO_DONE, 1);
 
 	ret = wait_for_completion_timeout(&msm_host->video_comp,
 			msecs_to_jiffies(70));
@@ -1232,14 +1235,16 @@ static void dsi_wait4video_done(struct msm_dsi_host *msm_host)
 		DRM_DEV_ERROR(dev, "wait for video done timed out\n");
 
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_VIDEO_DONE, 0);
+	return ret ? 0 : -ETIMEDOUT;
 }
 
-static void dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
+static int dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
 {
 	u32 data;
+	int ret;
 
 	if (!(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO))
-		return;
+		return 0;
 
 	data = dsi_read(msm_host, REG_DSI_STATUS0);
 
@@ -1249,13 +1254,16 @@ static void dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
 	 * data already, so no need to wait in those cases
 	 */
 	if (!(data & DSI_STATUS0_VIDEO_MODE_ENGINE_BUSY))
-		return;
+		return 0;
 
 	if (msm_host->power_on && msm_host->enabled) {
-		dsi_wait4video_done(msm_host);
+		ret = dsi_wait4video_done(msm_host);
+		if (ret)
+			return ret;
 		/* delay 4 ms to skip BLLP */
 		usleep_range(2000, 4000);
 	}
+	return 0;
 }
 
 int dsi_tx_buf_alloc_6g(struct msm_dsi_host *msm_host, int size)
@@ -1473,7 +1481,9 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 
 	reinit_completion(&msm_host->dma_comp);
 
-	dsi_wait4video_eng_busy(msm_host);
+	ret = dsi_wait4video_eng_busy(msm_host);
+	if (ret)
+		return ret;
 
 	triggered = msm_dsi_manager_cmd_xfer_trigger(
 						msm_host->id, dma_base, len);
