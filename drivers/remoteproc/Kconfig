@@ -14,6 +14,25 @@ config REMOTEPROC
 
 if REMOTEPROC
 
+config QCOM_DSPS
+	tristate "Qualcomm APQ8064 ARM7 sensor processor"
+	depends on OF && ARCH_QCOM
+	depends on MAILBOX && QCOM_SMEM
+	select QCOM_SCM
+	select QCOM_MDT_LOADER
+	select QCOM_RPROC_COMMON
+	select RPMSG_QCOM_SMD
+	help
+	  Secure peripheral loader for the ARM7 DSPS sensor processor
+	  on APQ8064. Firmware is started through the remoteproc interface.
+
+config QCOM_DSPS_KUNIT_TEST
+	tristate "Qualcomm DSPS firmware validation tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Tests for ARM7 DSPS scatter firmware validation.
+
 config REMOTEPROC_CDEV
 	bool "Remoteproc character device interface"
 	help

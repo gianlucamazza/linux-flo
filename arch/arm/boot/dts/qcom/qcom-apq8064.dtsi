@@ -27,6 +27,11 @@
 			no-map;
 		};
 
+		dsps_mem: dsps@8fe00000 {
+			reg = <0x8fe00000 0x100000>;
+			no-map;
+		};
+
 		wcnss_mem: wcnss@8f000000 {
 			reg = <0x8f000000 0x700000>;
 			no-map;
@@ -714,6 +719,24 @@
 		sps_sic_non_secure: interrupt-controller@12100000 {
 			compatible = "qcom,apq8064-sps-sic", "syscon";
 			reg = <0x12100000 0x10000>;
+		};
+
+		dsps: remoteproc@12080000 {
+			compatible = "qcom,apq8064-dsps-pil";
+			reg = <0x12080000 0x2000>, <0x12000000 0x28000>,
+			      <0x12040000 0x4000>, <0x12800000 0x4000>;
+			reg-names = "ppss", "tcm-code", "tcm-buffer", "pipe";
+			interrupts-extended = <&intc GIC_SPI 213 IRQ_TYPE_EDGE_RISING>,
+					      <&dsps_smsm 6 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "watchdog", "fatal";
+			memory-region = <&dsps_mem>;
+			status = "disabled";
+
+			smd-edge {
+				interrupts = <GIC_SPI 138 IRQ_TYPE_EDGE_RISING>;
+				qcom,ipc = <&sps_sic_non_secure 0x4080 0>;
+				qcom,smd-edge = <3>;
+			};
 		};
 
 		gsbi1: gsbi@12440000 {

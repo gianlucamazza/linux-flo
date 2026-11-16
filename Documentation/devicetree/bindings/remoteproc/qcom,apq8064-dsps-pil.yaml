@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/remoteproc/qcom,apq8064-dsps-pil.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm APQ8064 ARM7 sensor processor
+
+maintainers:
+  - Gianluca Mazza <info@gianlucamazza.it>
+
+description: |
+  The APQ8064 DSPS sensor processor is an ARM7 with firmware in code TCM,
+  buffer TCM, PIPE memory and reserved DDR. Secure firmware authentication
+  and processor reset are provided by the Qualcomm peripheral authentication
+  service. Sensors and their power management are owned by DSPS firmware.
+
+properties:
+  compatible:
+    const: qcom,apq8064-dsps-pil
+
+  reg:
+    items:
+      - description: PPSS control registers
+      - description: DSPS code TCM
+      - description: DSPS buffer TCM
+      - description: DSPS PIPE memory
+
+  reg-names:
+    items:
+      - const: ppss
+      - const: tcm-code
+      - const: tcm-buffer
+      - const: pipe
+
+  interrupts:
+    items:
+      - description: DSPS watchdog
+      - description: DSPS SMSM reset notification
+
+  interrupt-names:
+    items:
+      - const: watchdog
+      - const: fatal
+
+  memory-region:
+    maxItems: 1
+    description: Reserved, non-mapped DSPS DDR memory
+
+  firmware-name:
+    maxItems: 1
+
+  smd-edge:
+    $ref: /schemas/remoteproc/qcom,smd-edge.yaml#
+    description: SMD communication edge between the AP and DSPS
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - memory-region
+  - smd-edge
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    remoteproc@12080000 {
+        compatible = "qcom,apq8064-dsps-pil";
+        reg = <0x12080000 0x2000>, <0x12000000 0x28000>,
+              <0x12040000 0x4000>, <0x12800000 0x4000>;
+        reg-names = "ppss", "tcm-code", "tcm-buffer", "pipe";
+        interrupts-extended = <&intc GIC_SPI 213 IRQ_TYPE_EDGE_RISING>,
+                              <&dsps_smsm 6 IRQ_TYPE_EDGE_RISING>;
+        interrupt-names = "watchdog", "fatal";
+        memory-region = <&dsps_mem>;
+
+        smd-edge {
+            interrupts = <GIC_SPI 138 IRQ_TYPE_EDGE_RISING>;
+            qcom,ipc = <&sps_sic_non_secure 0x4080 0>;
+            qcom,smd-edge = <3>;
+        };
+    };
+...
