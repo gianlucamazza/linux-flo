@@ -263,9 +263,11 @@
 			regulator-max-microvolt = <2900000>;
 		};
 
+		/* Also the L2 cache memory rail: keep it at the 648 MHz level. */
 		pm8921_l24: l24 {
-			regulator-min-microvolt = <750000>;
+			regulator-min-microvolt = <1050000>;
 			regulator-max-microvolt = <1150000>;
+			regulator-always-on;
 		};
 
 		pm8921_lvs2: lvs2 {
@@ -273,9 +275,10 @@
 
 		/* msm otg HSUSB_VDDCX */
 		pm8921_s3: s3 {
-			regulator-min-microvolt = <500000>;
+			regulator-min-microvolt = <1050000>;
 			regulator-max-microvolt = <1150000>;
 			qcom,switch-mode-frequency = <4800000>;
+			regulator-always-on;
 		};
 
 		/*
@@ -451,4 +454,14 @@
 
 &cpu_alert3 {
 	temperature = <85000>;
+};
+
+/*
+ * The vendor kernel runs the L2 cache at 648 MHz for CPU rates up to
+ * 1026 MHz and at 1134 MHz above that. Nothing scales it here, so pick the
+ * rate that the 1.05 V digital and memory rails allow.
+ */
+&kraitcc {
+	assigned-clocks = <&kraitcc 4>;
+	assigned-clock-rates = <648000000>;
 };
