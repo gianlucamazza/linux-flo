@@ -180,6 +180,8 @@
 		compatible = "elan,ektf3624";
 		touchscreen-size-x = <2240>;
 		touchscreen-size-y = <1344>;
+		touchscreen-x-mm = <94>;
+		touchscreen-y-mm = <151>;
 		touchscreen-inverted-x;
 		touchscreen-swapped-x-y;
 		reg = <0x10>;
