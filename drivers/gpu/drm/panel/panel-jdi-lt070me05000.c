@@ -67,6 +67,17 @@ static int jdi_panel_init(struct jdi_panel *jdi)
 	 */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x24);
 
+	/*
+	 * The soft reset above puts the brightness register back to its
+	 * default. Program the requested level here, in LP mode with the rest
+	 * of the init sequence, instead of relying on the HS write that
+	 * backlight_enable() sends while the video stream is starting. The
+	 * backlight is still marked off here, so use the stored level.
+	 */
+	if (jdi->backlight)
+		mipi_dsi_dcs_set_display_brightness_multi(&dsi_ctx,
+				jdi->backlight->props.brightness);
+
 	/* CABC off */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, 0x00);
 
@@ -118,6 +129,13 @@ static int jdi_panel_disable(struct drm_panel *panel)
 
 	backlight_disable(jdi->backlight);
 
+	/*
+	 * Send display off and sleep in while the host still runs the video
+	 * stream. Once the stream is stopped the DSI command engine waits for
+	 * a video-done interrupt that never comes and both commands time out.
+	 */
+	jdi_panel_off(jdi);
+
 	return 0;
 }
 
@@ -126,8 +144,6 @@ static int jdi_panel_unprepare(struct drm_panel *panel)
 	struct jdi_panel *jdi = to_jdi_panel(panel);
 	struct device *dev = &jdi->dsi->dev;
 	int ret;
-
-	jdi_panel_off(jdi);
 
 	ret = regulator_bulk_disable(ARRAY_SIZE(jdi->supplies), jdi->supplies);
 	if (ret < 0)
