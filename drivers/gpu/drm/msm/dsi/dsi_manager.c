@@ -4,6 +4,8 @@
  */
 
 #include "drm/drm_bridge_connector.h"
+#include <drm/drm_encoder.h>
+#include <drm/drm_vblank.h>
 
 #include "msm_kms.h"
 #include "dsi.h"
@@ -486,6 +488,24 @@ int msm_dsi_manager_connector_init(struct msm_dsi *msm_dsi,
 	}
 
 	return 0;
+}
+
+int msm_dsi_manager_wait_for_vblank(int id)
+{
+	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+	struct drm_encoder *encoder;
+	struct drm_crtc *crtc;
+
+	if (!msm_dsi || !msm_dsi->next_bridge)
+		return -ENODEV;
+	encoder = msm_dsi->next_bridge->encoder;
+	if (!encoder)
+		return -ENODEV;
+	crtc = READ_ONCE(encoder->crtc);
+	if (!crtc)
+		return -ENODEV;
+
+	return drm_crtc_wait_one_vblank(crtc);
 }
 
 int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
