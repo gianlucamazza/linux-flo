@@ -1221,6 +1221,10 @@ static int dsi_wait4video_done(struct msm_dsi_host *msm_host)
 	u32 ret = 0;
 	struct device *dev = &msm_host->pdev->dev;
 
+	/* V2 video streams synchronize to the MDP frame completion. */
+	if (msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_V2)
+		return msm_dsi_manager_wait_for_vblank(msm_host->id);
+
 	reinit_completion(&msm_host->video_comp);
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_VIDEO_DONE, 1);
 
