@@ -717,19 +717,20 @@ static irqreturn_t tsens_irq_thread(int irq, void *data)
 
 		if (!s->tzd)
 			continue;
+
+		/*
+		 * Pre v0.1 IP has a single threshold/status register set for
+		 * all sensors (see tsens_set_trips()), and only the fields for
+		 * index 0 are defined. Reading the status at the sensor's own
+		 * hw_id would read an unrelated register.
+		 */
+		if (tsens_version(priv) < VER_0_1)
+			hw_id = 0;
+
 		if (!tsens_threshold_violated(priv, hw_id, &d))
 			continue;
 
 		thermal_zone_device_update(s->tzd, THERMAL_EVENT_UNSPECIFIED);
-
-		if (tsens_version(priv) < VER_0_1) {
-			/* Constraint: There is only 1 interrupt control register for all
-			 * 11 temperature sensor. So monitoring more than 1 sensor based
-			 * on interrupts will yield inconsistent result. To overcome this
-			 * issue we will monitor only sensor 0 which is the master sensor.
-			 */
-			break;
-		}
 	}
 
 	return IRQ_HANDLED;
@@ -1254,11 +1255,17 @@ static int tsens_register_irq(struct tsens_priv *priv, char *irqname,
 		if (irq == -ENXIO)
 			ret = 0;
 	} else {
-		/* VER_0 interrupt is TRIGGER_RISING, VER_0_1 and up is ONESHOT */
+		/*
+		 * VER_0 interrupt is TRIGGER_RISING, VER_0_1 and up is ONESHOT.
+		 * The handlers call thermal_zone_device_update(), which takes
+		 * a mutex and runs the governors and cooling devices, so they
+		 * must run in thread context for VER_0 as well.
+		 */
 		if (tsens_version(priv) == VER_0)
-			ret = devm_request_threaded_irq(&pdev->dev, irq,
-							thread_fn, NULL,
-							IRQF_TRIGGER_RISING,
+			ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
+							thread_fn,
+							IRQF_TRIGGER_RISING |
+							IRQF_ONESHOT,
 							dev_name(&pdev->dev),
 							priv);
 		else
