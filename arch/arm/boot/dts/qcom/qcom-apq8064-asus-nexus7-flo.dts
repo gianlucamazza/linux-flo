@@ -435,3 +435,20 @@
 		vdddig-supply = <&pm8921_lvs2>;
 	};
 };
+
+/* The tablet idles around 60 C; start throttling well above that. */
+&cpu_alert0 {
+	temperature = <85000>;
+};
+
+&cpu_alert1 {
+	temperature = <85000>;
+};
+
+&cpu_alert2 {
+	temperature = <85000>;
+};
+
+&cpu_alert3 {
+	temperature = <85000>;
+};
