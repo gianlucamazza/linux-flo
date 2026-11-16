@@ -6,6 +6,7 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/bitops.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/thermal.h>
 #include "tsens.h"
@@ -32,6 +33,8 @@
 #define THRESHOLD_ADDR		0x3624
 
 #define INT_STATUS_ADDR		0x363c
+/* APQ8064: upper/lower status clear bits live here, not in CNTL */
+#define STATUS_CNTL_ADDR_8064	0x3660
 
 #define S0_STATUS_OFF		0x3628
 #define S1_STATUS_OFF		0x362c
@@ -256,8 +259,85 @@ static const struct reg_field tsens_8960_regfields[MAX_REGFIELDS] = {
 	[TRDY] = REG_FIELD(INT_STATUS_ADDR, 7, 7),
 };
 
+/*
+ * Same bitfields as MSM8960, except the upper/lower status clear bits.
+ * APQ8064 has 11 sensors, whose enable bits occupy CNTL[13:3], so the
+ * clear bits that MSM8960 keeps in CNTL[10:9] live in STATUS_CNTL[2:1].
+ */
+static const struct reg_field tsens_8064_regfields[MAX_REGFIELDS] = {
+	/* ----- SROT ------ */
+	/* No VERSION information */
+
+	/* CNTL */
+	[TSENS_EN]     = REG_FIELD(CNTL_ADDR,  0, 0),
+	[TSENS_SW_RST] = REG_FIELD(CNTL_ADDR,  1, 1),
+	/* 8960 has 5 sensors, 8660 has 11, we only handle 5 */
+	[SENSOR_EN]    = REG_FIELD(CNTL_ADDR,  3, 7),
+
+	/* ----- TM ------ */
+	/* INTERRUPT ENABLE */
+	/* NO INTERRUPT ENABLE */
+
+	/* Single UPPER/LOWER TEMPERATURE THRESHOLD for all sensors */
+	[LOW_THRESH_0]   = REG_FIELD(THRESHOLD_ADDR,  0,  7),
+	[UP_THRESH_0]    = REG_FIELD(THRESHOLD_ADDR,  8, 15),
+	/* MIN_THRESH_0 and MAX_THRESH_0 are not present in the regfield
+	 * Recycle CRIT_THRESH_0 and 1 to set the required regs to hardcoded temp
+	 * MIN_THRESH_0 -> CRIT_THRESH_1
+	 * MAX_THRESH_0 -> CRIT_THRESH_0
+	 */
+	[CRIT_THRESH_1]   = REG_FIELD(THRESHOLD_ADDR, 16, 23),
+	[CRIT_THRESH_0]   = REG_FIELD(THRESHOLD_ADDR, 24, 31),
+
+	/* UPPER/LOWER INTERRUPT [CLEAR/STATUS] */
+	/* 1 == clear, 0 == normal operation */
+	[LOW_INT_CLEAR_0]   = REG_FIELD(STATUS_CNTL_ADDR_8064,  1,  1),
+	[UP_INT_CLEAR_0]    = REG_FIELD(STATUS_CNTL_ADDR_8064,  2,  2),
+
+	/* NO CRITICAL INTERRUPT SUPPORT on 8960 */
+
+	/* Sn_STATUS */
+	[LAST_TEMP_0]  = REG_FIELD(S0_STATUS_OFF,  0,  7),
+	[LAST_TEMP_1]  = REG_FIELD(S1_STATUS_OFF,  0,  7),
+	[LAST_TEMP_2]  = REG_FIELD(S2_STATUS_OFF,  0,  7),
+	[LAST_TEMP_3]  = REG_FIELD(S3_STATUS_OFF,  0,  7),
+	[LAST_TEMP_4]  = REG_FIELD(S4_STATUS_OFF,  0,  7),
+	[LAST_TEMP_5]  = REG_FIELD(S5_STATUS_OFF,  0,  7),
+	[LAST_TEMP_6]  = REG_FIELD(S6_STATUS_OFF,  0,  7),
+	[LAST_TEMP_7]  = REG_FIELD(S7_STATUS_OFF,  0,  7),
+	[LAST_TEMP_8]  = REG_FIELD(S8_STATUS_OFF,  0,  7),
+	[LAST_TEMP_9]  = REG_FIELD(S9_STATUS_OFF,  0,  7),
+	[LAST_TEMP_10] = REG_FIELD(S10_STATUS_OFF, 0,  7),
+
+	/* No VALID field on 8960 */
+	/* TSENS_INT_STATUS bits: 1 == threshold violated */
+	[MIN_STATUS_0] = REG_FIELD(INT_STATUS_ADDR, 0, 0),
+	[LOWER_STATUS_0] = REG_FIELD(INT_STATUS_ADDR, 1, 1),
+	[UPPER_STATUS_0] = REG_FIELD(INT_STATUS_ADDR, 2, 2),
+	/* No CRITICAL field on 8960 */
+	[MAX_STATUS_0] = REG_FIELD(INT_STATUS_ADDR, 3, 3),
+
+	/* TRDY: 1=ready, 0=in progress */
+	[TRDY] = REG_FIELD(INT_STATUS_ADDR, 7, 7),
+};
+
+/*
+ * APQ8064 has 11 sensors, whose enable bits occupy CNTL[13:3]. The upper and
+ * lower status clear bits that MSM8960 keeps in CNTL[10:9] therefore moved to
+ * STATUS_CNTL[2:1]. Using the MSM8960 layout on APQ8064 makes every
+ * tsens_set_trips() call clear the enable bits of sensors 6 and 7, freezing
+ * their readings at the last value.
+ */
+static int init_8960(struct tsens_priv *priv)
+{
+	if (of_machine_is_compatible("qcom,apq8064"))
+		priv->fields = tsens_8064_regfields;
+
+	return init_common(priv);
+}
+
 static const struct tsens_ops ops_8960 = {
-	.init		= init_common,
+	.init		= init_8960,
 	.calibrate	= calibrate_8960,
 	.get_temp	= get_temp_common,
 	.enable		= enable_8960,
