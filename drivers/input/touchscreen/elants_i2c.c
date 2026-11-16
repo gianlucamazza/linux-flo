@@ -1394,6 +1394,7 @@ static bool elants_acpi_is_hid_device(struct device *dev)
 
 static int elants_i2c_probe(struct i2c_client *client)
 {
+	u32 x_mm, y_mm;
 	union i2c_smbus_data dummy;
 	struct elants_data *ts;
 	unsigned long irqflags;
@@ -1493,7 +1494,20 @@ static int elants_i2c_probe(struct i2c_client *client)
 
 	touchscreen_parse_properties(ts->input, true, &ts->prop);
 
-	if (ts->chip_id == EKTF3624 && ts->phy_x && ts->phy_y) {
+	if (!device_property_read_u32(&client->dev, "touchscreen-x-mm", &x_mm) &&
+	    !device_property_read_u32(&client->dev, "touchscreen-y-mm", &y_mm) &&
+	    x_mm && y_mm) {
+		/*
+		 * The board knows the physical size better than the firmware.
+		 * The properties describe the reported axes, while prop.max_x
+		 * and prop.max_y stay in the sensor orientation.
+		 */
+		u32 rx = ts->prop.swap_x_y ? ts->prop.max_y : ts->prop.max_x;
+		u32 ry = ts->prop.swap_x_y ? ts->prop.max_x : ts->prop.max_y;
+
+		ts->x_res = DIV_ROUND_CLOSEST(rx + 1, x_mm);
+		ts->y_res = DIV_ROUND_CLOSEST(ry + 1, y_mm);
+	} else if (ts->chip_id == EKTF3624 && ts->phy_x && ts->phy_y) {
 		/* calculate resolution from size */
 		ts->x_res = DIV_ROUND_CLOSEST(ts->prop.max_x, ts->phy_x);
 		ts->y_res = DIV_ROUND_CLOSEST(ts->prop.max_y, ts->phy_y);
