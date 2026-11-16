@@ -2,6 +2,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/power/summit,smb347-charger.h>
 
 #include "qcom-apq8064-v2.0.dtsi"
 #include "pm8821.dtsi"
@@ -78,6 +79,14 @@
 			};
 		};
 	};
+
+	/*
+	 * The charger driver needs a battery reference to probe. No charge
+	 * limits are given, so the values programmed in the SMB345 are kept.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+	};
 };
 
 &dsi0 {
@@ -140,6 +149,22 @@
 		reg = <0x55>;
 	};
 
+	/*
+	 * Battery charger fed from the micro-USB connector. Current and
+	 * voltage limits are left at the values programmed in the chip.
+	 */
+	charger@6a {
+		compatible = "summit,smb345";
+		reg = <0x6a>;
+
+		summit,enable-charge-control = <SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW>;
+		summit,inok-polarity = <SMB3XX_SYSOK_INOK_ACTIVE_LOW>;
+		summit,enable-usb-charging;
+		/* DCP/CDP: the bootloader default of 500 mA cannot power the tablet */
+		summit,usb-current-limit-microamp = <1500000>;
+
+		monitored-battery = <&battery>;
+	};
 };
 
 &gsbi3 {
