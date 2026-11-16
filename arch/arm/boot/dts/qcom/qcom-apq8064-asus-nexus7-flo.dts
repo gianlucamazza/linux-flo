@@ -473,3 +473,8 @@
 	assigned-clocks = <&kraitcc 4>;
 	assigned-clock-rates = <648000000>;
 };
+
+&dsps {
+	status = "okay";
+	firmware-name = "postmarketos/dsps.mdt";
+};
