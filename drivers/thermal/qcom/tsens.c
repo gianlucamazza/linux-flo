@@ -290,10 +290,19 @@ void compute_intercept_slope(struct tsens_priv *priv, u32 *p1,
 
 static inline u32 degc_to_code(int degc, const struct tsens_sensor *s)
 {
-	u64 code = div_u64(((u64)degc * s->slope + s->offset), SLOPE_FACTOR);
+	const struct reg_field *f = &s->priv->fields[LAST_TEMP_0];
+	s64 max_code = min_t(s64, THRESHOLD_MAX_ADC_CODE,
+			     GENMASK(f->msb - f->lsb, 0));
+	/*
+	 * degc and the result can be negative (e.g. the -40 C lower trip
+	 * clamp on a sensor whose 30 C calibration code is small). Doing this
+	 * in u64 wraps around and clamps to the maximum code, which puts the
+	 * lower threshold above the current temperature.
+	 */
+	s64 code = div_s64((s64)degc * s->slope + s->offset, SLOPE_FACTOR);
 
-	pr_debug("%s: raw_code: 0x%llx, degc:%d\n", __func__, code, degc);
-	return clamp_val(code, THRESHOLD_MIN_ADC_CODE, THRESHOLD_MAX_ADC_CODE);
+	pr_debug("%s: raw_code: %lld, degc:%d\n", __func__, code, degc);
+	return clamp_val(code, THRESHOLD_MIN_ADC_CODE, max_code);
 }
 
 static inline int code_to_degc(u32 adc_code, const struct tsens_sensor *s)
