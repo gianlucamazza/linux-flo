@@ -10,6 +10,7 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -210,6 +211,7 @@ struct smb347_charger {
 	bool			usb_online;
 	bool			irq_unsupported;
 	bool			usb_vbus_enabled;
+	int			inok_irq;
 
 	unsigned int		max_charge_current;
 	unsigned int		max_charge_voltage;
@@ -419,6 +421,30 @@ static int smb347_start_stop_charging(struct smb347_charger *smb)
 	}
 
 	return ret;
+}
+
+static int smb347_handle_input_change(struct smb347_charger *smb)
+{
+	int ret;
+
+	ret = smb347_update_ps_status(smb);
+	if (ret <= 0)
+		return ret;
+
+	ret = smb347_start_stop_charging(smb);
+	if (ret < 0)
+		dev_warn(smb->dev, "failed to change charging state: %d\n", ret);
+
+	/* The input state changed even if the charging command failed. */
+	return 1;
+}
+
+static void smb347_notify_input_change(struct smb347_charger *smb)
+{
+	if (smb->use_mains)
+		power_supply_changed(smb->mains);
+	if (smb->use_usb)
+		power_supply_changed(smb->usb);
 }
 
 static int smb347_set_charge_current(struct smb347_charger *smb)
@@ -881,17 +907,58 @@ static irqreturn_t smb347_interrupt(int irq, void *data)
 	 * was connected or disconnected.
 	 */
 	if (irqstat_e & (IRQSTAT_E_USBIN_UV_IRQ | IRQSTAT_E_DCIN_UV_IRQ)) {
-		if (smb347_update_ps_status(smb) > 0) {
-			smb347_start_stop_charging(smb);
-			if (smb->use_mains)
-				power_supply_changed(smb->mains);
-			if (smb->use_usb)
-				power_supply_changed(smb->usb);
-		}
+		ret = smb347_handle_input_change(smb);
+		if (ret > 0)
+			smb347_notify_input_change(smb);
+		else if (ret < 0)
+			dev_warn(smb->dev, "failed to read input state: %d\n", ret);
 		handled = true;
 	}
 
 	return handled ? IRQ_HANDLED : IRQ_NONE;
+}
+
+static irqreturn_t smb347_inok_interrupt(int irq, void *data)
+{
+	struct smb347_charger *smb = data;
+	int ret;
+
+	/* INOK is a separate pin and does not set the charger's IRQSTAT bits. */
+	usleep_range(25000, 35000);
+	ret = smb347_handle_input_change(smb);
+	if (ret > 0)
+		smb347_notify_input_change(smb);
+	else if (ret < 0)
+		dev_warn(smb->dev, "failed to read INOK input state: %d\n", ret);
+
+	return IRQ_HANDLED;
+}
+
+static int smb347_inok_irq_init(struct smb347_charger *smb)
+{
+	struct gpio_desc *inok;
+	int irq, ret;
+
+	inok = devm_gpiod_get_optional(smb->dev, "inok", GPIOD_IN);
+	if (IS_ERR(inok))
+		return PTR_ERR(inok);
+	if (!inok)
+		return 0;
+
+	irq = gpiod_to_irq(inok);
+	if (irq < 0)
+		return irq;
+
+	ret = devm_request_threaded_irq(smb->dev, irq, NULL,
+					smb347_inok_interrupt,
+					IRQF_ONESHOT | IRQF_TRIGGER_RISING |
+					IRQF_TRIGGER_FALLING,
+					"smb347-inok", smb);
+	if (ret)
+		return ret;
+
+	smb->inok_irq = irq;
+	return 0;
 }
 
 static int smb347_irq_set(struct smb347_charger *smb, bool enable)
@@ -1597,6 +1664,7 @@ static int smb347_probe(struct i2c_client *client)
 		return -ENOMEM;
 	smb->dev = &client->dev;
 	smb->id = id->driver_data;
+	smb->inok_irq = -1;
 	i2c_set_clientdata(client, smb);
 
 	smb347_dt_parse_dev_info(smb);
@@ -1634,6 +1702,11 @@ static int smb347_probe(struct i2c_client *client)
 	ret = smb347_irq_init(smb, client);
 	if (ret)
 		return ret;
+	ret = smb347_inok_irq_init(smb);
+	if (ret) {
+		smb347_irq_disable(smb);
+		return ret;
+	}
 
 	usb_rdev_cfg.dev = dev;
 	usb_rdev_cfg.driver_data = smb;
@@ -1654,6 +1727,10 @@ static void smb347_remove(struct i2c_client *client)
 {
 	struct smb347_charger *smb = i2c_get_clientdata(client);
 
+	if (smb->inok_irq >= 0) {
+		devm_free_irq(smb->dev, smb->inok_irq, smb);
+		smb->inok_irq = -1;
+	}
 	smb347_usb_vbus_regulator_disable(smb->usb_rdev);
 	smb347_irq_disable(smb);
 }

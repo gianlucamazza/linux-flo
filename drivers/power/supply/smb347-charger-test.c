@@ -4,12 +4,16 @@
 
 struct smb347_test_bus {
 	u8 regs[SMB347_MAX_REGISTER + 1];
+	bool fail_read;
+	unsigned int fail_reg;
 };
 
 static int smb347_test_read(void *context, unsigned int reg, unsigned int *val)
 {
 	struct smb347_test_bus *bus = context;
 
+	if (bus->fail_read && reg == bus->fail_reg)
+		return -EIO;
 	*val = bus->regs[reg];
 	return 0;
 }
@@ -146,11 +150,60 @@ static void smb347_usb_type_is_only_advertised_for_usb(struct kunit *test)
 	KUNIT_EXPECT_FALSE(test, found_mains);
 }
 
+static void smb347_input_event_controls_charging_without_chip_irq(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = { .use_usb = true,
+		.enable_control = SMB3XX_CHG_ENABLE_SW };
+	struct device *dev;
+	struct regmap *map;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	dev = kunit_device_register(test, "smb347-input-event");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.dev = dev;
+	smb.regmap = map;
+
+	/* No IRQSTAT_E interrupt latch: INOK is a separate physical pin. */
+	bus->regs[IRQSTAT_E] = 0;
+	KUNIT_ASSERT_EQ(test, smb347_handle_input_change(&smb), 1);
+	KUNIT_EXPECT_TRUE(test, smb.usb_online);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_A] & CMD_A_CHG_ENABLED,
+			CMD_A_CHG_ENABLED);
+
+	bus->regs[IRQSTAT_E] = IRQSTAT_E_USBIN_UV_STAT;
+	KUNIT_ASSERT_EQ(test, smb347_handle_input_change(&smb), 1);
+	KUNIT_EXPECT_FALSE(test, smb.usb_online);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_A] & CMD_A_CHG_ENABLED, 0);
+}
+
+static void smb347_input_event_read_failure_preserves_charging_state(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = { .use_usb = true,
+		.enable_control = SMB3XX_CHG_ENABLE_SW };
+	struct regmap *map;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.regmap = map;
+	bus->fail_read = true;
+	bus->fail_reg = IRQSTAT_E;
+	KUNIT_EXPECT_EQ(test, smb347_handle_input_change(&smb), -EIO);
+	KUNIT_EXPECT_FALSE(test, smb.usb_online);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_A] & CMD_A_CHG_ENABLED, 0);
+}
+
 static struct kunit_case smb347_reset_cases[] = {
 	KUNIT_CASE(smb347_config_read_tracks_chip_reset),
 	KUNIT_CASE(smb347_command_update_uses_chip_state),
 	KUNIT_CASE(smb347_usb_type_reports_only_known_apsd_codes),
 	KUNIT_CASE(smb347_usb_type_is_only_advertised_for_usb),
+	KUNIT_CASE(smb347_input_event_controls_charging_without_chip_irq),
+	KUNIT_CASE(smb347_input_event_read_failure_preserves_charging_state),
 	{}
 };
 
