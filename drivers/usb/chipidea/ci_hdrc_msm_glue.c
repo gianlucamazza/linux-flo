@@ -203,6 +203,33 @@ static void ci_msm_source_detect(struct ci_hdrc_msm *msm_ci,
 	ci_msm_source_update(msm_ci, true, type);
 }
 
+static void ci_msm_source_detect_unbound(struct ci_hdrc_msm *msm_ci,
+					struct ci_hdrc *ci)
+{
+	int ret;
+
+	if (!msm_ci->source_psy || !ci->ulpi || !ci->phy ||
+	    ci->role != CI_ROLE_GADGET || !ci->vbus_active)
+		return;
+
+	hw_phymode_configure(ci);
+	ret = phy_init(ci->phy);
+	if (ret)
+		goto err;
+
+	ret = phy_power_on(ci->phy);
+	if (ret)
+		goto exit_phy;
+
+	ci_msm_source_detect(msm_ci, ci);
+	phy_power_off(ci->phy);
+exit_phy:
+	phy_exit(ci->phy);
+err:
+	if (ret)
+		dev_warn(ci->dev, "USB source PHY initialization failed: %d\n", ret);
+}
+
 static int ci_msm_source_register(struct platform_device *pdev,
 				  struct ci_hdrc_msm *msm_ci,
 				  struct device_node *phy_node)
@@ -328,6 +355,8 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 #if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
 		ci_msm_source_update(msm_ci, ci->vbus_active,
 				     CI_MSM_BC12_UNKNOWN);
+		if (!ci->driver)
+			ci_msm_source_detect_unbound(msm_ci, ci);
 #endif
 		break;
 	case CI_HDRC_CONTROLLER_STOPPED_EVENT:
@@ -342,6 +371,10 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 			phy_power_off(ci->phy);
 			phy_exit(ci->phy);
 		}
+#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
+		if (!ci->driver)
+			ci_msm_source_detect_unbound(msm_ci, ci);
+#endif
 		break;
 	default:
 		dev_dbg(dev, "unknown ci_hdrc event\n");
@@ -471,6 +504,8 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 			of_node_put(ulpi_node);
 			goto err_mux;
 		}
+		if (ci->source_psy)
+			ci->pdata.flags |= CI_HDRC_REPORT_VBUS_WITHOUT_GADGET;
 #endif
 		of_node_put(phy_node);
 	}

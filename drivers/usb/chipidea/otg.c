@@ -216,6 +216,24 @@ static void ci_otg_work(struct work_struct *work)
 {
 	struct ci_hdrc *ci = container_of(work, struct ci_hdrc, work);
 
+	if (ci_otg_is_fsm_mode(ci) &&
+	    (ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    !ci->driver &&
+	    ci->role == CI_ROLE_GADGET && ci->platdata->notify_event) {
+		bool vbus = !!hw_read_otgsc(ci, OTGSC_BSV);
+		unsigned long flags;
+		bool changed;
+
+		spin_lock_irqsave(&ci->lock, flags);
+		changed = ci->vbus_active != vbus;
+		ci->vbus_active = vbus;
+		spin_unlock_irqrestore(&ci->lock, flags);
+
+		if (changed)
+			ci->platdata->notify_event(ci,
+				CI_HDRC_CONTROLLER_VBUS_EVENT);
+	}
+
 	if (ci_otg_is_fsm_mode(ci) && !ci_otg_fsm_work(ci)) {
 		enable_irq(ci->irq);
 		return;
