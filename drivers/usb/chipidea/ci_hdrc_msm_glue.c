@@ -50,6 +50,7 @@ struct ci_hdrc_msm {
 	struct reset_controller_dev rcdev;
 	bool secondary_phy;
 	bool hsic;
+	bool gadget_phy_on;
 	void __iomem *base;
 #if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
 	struct power_supply *source_psy;
@@ -294,6 +295,7 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 			phy_exit(ci->phy);
 			return ret;
 		}
+		msm_ci->gadget_phy_on = true;
 
 		/* use AHB transactor, allow posted data writes */
 		hw_write_id_reg(ci, HS_PHY_AHB_MODE, 0xffffffff, 0x8);
@@ -332,8 +334,11 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 				     ci->role == CI_ROLE_GADGET,
 				     CI_MSM_BC12_UNKNOWN);
 #endif
-		phy_power_off(ci->phy);
-		phy_exit(ci->phy);
+		if (msm_ci->gadget_phy_on) {
+			msm_ci->gadget_phy_on = false;
+			phy_power_off(ci->phy);
+			phy_exit(ci->phy);
+		}
 		break;
 	default:
 		dev_dbg(dev, "unknown ci_hdrc event\n");

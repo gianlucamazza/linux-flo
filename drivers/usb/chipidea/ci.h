@@ -197,6 +197,7 @@ struct hw_bank {
  * @test_mode: the selected test mode
  * @platdata: platform specific information supplied by parent device
  * @vbus_active: is VBUS active
+ * @gadget_pm_active: gadget connect owns a runtime PM reference
  * @ulpi: pointer to ULPI device, if any
  * @ulpi_ops: ULPI read/write ops for this device
  * @phy: pointer to PHY, if any
@@ -251,6 +252,7 @@ struct ci_hdrc {
 
 	struct ci_hdrc_platform_data	*platdata;
 	int				vbus_active;
+	bool				gadget_pm_active;
 	struct ulpi			*ulpi;
 	struct ulpi_ops 		ulpi_ops;
 	struct phy			*phy;
