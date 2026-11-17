@@ -23,6 +23,10 @@ properties:
   interrupts:
     maxItems: 1
 
+  inok-gpios:
+    maxItems: 1
+    description: Charger INOK input-presence signal, separate from the STAT interrupt.
+
   monitored-battery: true
 
   summit,enable-usb-charging:
