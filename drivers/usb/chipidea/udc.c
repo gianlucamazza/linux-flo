@@ -2244,7 +2244,8 @@ static int ci_udc_stop(struct usb_gadget *gadget)
 			CI_HDRC_CONTROLLER_STOPPED_EVENT);
 		_gadget_stop_activity(&ci->gadget);
 		spin_lock_irqsave(&ci->lock, flags);
-		pm_runtime_put(ci->dev);
+		if (ci->supports_runtime_pm)
+			pm_runtime_put(ci->dev);
 	}
 
 	spin_unlock_irqrestore(&ci->lock, flags);
