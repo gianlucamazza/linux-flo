@@ -43,6 +43,11 @@ config USB_CHIPIDEA_MSM
 	tristate "Enable MSM hsusb glue driver" if EXPERT
 	default USB_CHIPIDEA
 
+config USB_CHIPIDEA_MSM_BC12_KUNIT_TEST
+	bool "Test MSM USB source detection" if !KUNIT_ALL_TESTS
+	depends on KUNIT && USB_CHIPIDEA_MSM=y
+	default KUNIT_ALL_TESTS
+
 config USB_CHIPIDEA_NPCM
 	tristate "Enable NPCM hsusb glue driver" if EXPERT
 	default USB_CHIPIDEA
