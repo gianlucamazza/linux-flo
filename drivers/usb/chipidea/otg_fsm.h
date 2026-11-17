@@ -66,6 +66,7 @@
 int ci_hdrc_otg_fsm_init(struct ci_hdrc *ci);
 int ci_otg_fsm_work(struct ci_hdrc *ci);
 irqreturn_t ci_otg_fsm_irq(struct ci_hdrc *ci);
+void ci_otg_fsm_reconcile_inputs(struct ci_hdrc *ci);
 void ci_hdrc_otg_fsm_start(struct ci_hdrc *ci);
 void ci_hdrc_otg_fsm_remove(struct ci_hdrc *ci);
 
@@ -84,6 +85,10 @@ static inline int ci_otg_fsm_work(struct ci_hdrc *ci)
 static inline irqreturn_t ci_otg_fsm_irq(struct ci_hdrc *ci)
 {
 	return IRQ_NONE;
+}
+
+static inline void ci_otg_fsm_reconcile_inputs(struct ci_hdrc *ci)
+{
 }
 
 static inline void ci_hdrc_otg_fsm_start(struct ci_hdrc *ci)

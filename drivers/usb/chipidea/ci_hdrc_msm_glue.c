@@ -22,6 +22,7 @@
 #include "ci.h"
 #include "bits.h"
 #include "otg.h"
+#include "otg_fsm.h"
 #if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
 #include "ci_hdrc_msm_bc12.h"
 #endif
@@ -241,7 +242,7 @@ static void ci_msm_source_work(struct work_struct *work)
 
 	/* Reset and power up the PHY exactly as the bound gadget does. */
 	disable_irq(ci->irq);
-	otg_irq_enable = hw_read_otgsc(ci, OTGSC_IDIE | OTGSC_BSVIE);
+	otg_irq_enable = hw_read_otgsc(ci, OTGSC_INT_EN_BITS);
 	ret = hw_device_reset(ci);
 	if (ret) {
 		dev_warn(ci->dev, "USB source controller reset failed: %d\n",
@@ -249,7 +250,8 @@ static void ci_msm_source_work(struct work_struct *work)
 		ci_msm_source_update(msm_ci, true, CI_MSM_BC12_UNKNOWN);
 	}
 	ci->platdata->notify_event(ci, CI_HDRC_CONTROLLER_STOPPED_EVENT);
-	hw_write_otgsc(ci, OTGSC_IDIE | OTGSC_BSVIE, otg_irq_enable);
+	hw_write_otgsc(ci, OTGSC_INT_EN_BITS, otg_irq_enable);
+	ci_otg_fsm_reconcile_inputs(ci);
 	if (!hw_read_otgsc(ci, OTGSC_BSV) ||
 	    !hw_read_otgsc(ci, OTGSC_ID))
 		ci_msm_source_update(msm_ci, false, CI_MSM_BC12_UNKNOWN);
@@ -431,8 +433,10 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 			    !hw_read_otgsc(ci, OTGSC_BSV))
 				ci_msm_source_update(msm_ci, false,
 						     CI_MSM_BC12_UNKNOWN);
-			else
+			else {
+				ci_msm_source_stop(msm_ci, true, true);
 				ci_msm_source_queue(msm_ci, ci);
+			}
 		}
 #endif
 		break;

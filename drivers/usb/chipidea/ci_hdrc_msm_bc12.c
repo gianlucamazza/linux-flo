@@ -65,8 +65,15 @@ bool ci_msm_bc12_source_needs_detection(
 bool ci_msm_bc12_source_stop(struct ci_msm_bc12_source_state *source,
 			     bool vbus_active, bool gadget_role)
 {
-	if (vbus_active && gadget_role)
+	if (vbus_active && gadget_role) {
+		if (source->online &&
+		    source->usb_type == POWER_SUPPLY_USB_TYPE_SDP &&
+		    source->current_max > 100000) {
+			source->current_max = 100000;
+			return true;
+		}
 		return false;
+	}
 	if (!source->online &&
 	    source->usb_type == POWER_SUPPLY_USB_TYPE_UNKNOWN &&
 	    !source->current_max)
