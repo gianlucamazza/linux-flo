@@ -57,7 +57,7 @@
 #define CFG_PIN_EN_CTRL_ACTIVE_LOW		0x60
 #define CFG_PIN_EN_APSD_IRQ			BIT(1)
 #define CFG_PIN_EN_CHARGER_ERROR		BIT(2)
-#define CFG_PIN_EN_CTRL				BIT(4)
+#define CFG_PIN_USB_MODE_CTRL			BIT(4)
 #define CFG_THERM				0x07
 #define CFG_THERM_SOFT_HOT_COMPENSATION_MASK	0x03
 #define CFG_THERM_SOFT_HOT_COMPENSATION_SHIFT	0
@@ -779,19 +779,9 @@ static int smb347_hw_init(struct smb347_charger *smb)
 	if (ret < 0)
 		goto fail;
 
-	/* Activate pin control, making it writable. */
-	switch (smb->enable_control) {
-	case SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW:
-	case SMB3XX_CHG_ENABLE_PIN_ACTIVE_HIGH:
-		ret = regmap_set_bits(smb->regmap, CFG_PIN, CFG_PIN_EN_CTRL);
-		if (ret < 0)
-			goto fail;
-	}
-
 	/*
-	 * Make the charging functionality controllable by a write to the
-	 * command register unless pin control is specified in the platform
-	 * data.
+	 * Select I2C control of the USB input mode. Charge enable control is
+	 * independent and may still use the enable pin.
 	 */
 	switch (smb->enable_control) {
 	case SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW:
@@ -805,7 +795,8 @@ static int smb347_hw_init(struct smb347_charger *smb)
 		break;
 	}
 
-	ret = regmap_update_bits(smb->regmap, CFG_PIN, CFG_PIN_EN_CTRL_MASK,
+	ret = regmap_update_bits(smb->regmap, CFG_PIN,
+				 CFG_PIN_EN_CTRL_MASK | CFG_PIN_USB_MODE_CTRL,
 				 val);
 	if (ret < 0)
 		goto fail;

@@ -231,6 +231,7 @@ static void smb347_inok_restores_config_without_online_transition(struct kunit *
 	smb.dev = dev;
 	smb.regmap = map;
 	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
+	bus->regs[CFG_PIN] = 0x70;
 	bus->regs[IRQSTAT_E] = 0;
 
 	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
@@ -238,6 +239,7 @@ static void smb347_inok_restores_config_without_online_transition(struct kunit *
 			5);
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_EN_CTRL_MASK,
 			CFG_PIN_EN_CTRL_ACTIVE_LOW);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_USB_MODE_CTRL, 0);
 	current_writes = bus->writes[CFG_CURRENT_LIMIT];
 	pin_writes = bus->writes[CFG_PIN];
 
