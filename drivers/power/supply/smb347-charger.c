@@ -128,6 +128,12 @@
 #define STAT_C_CHG_SHIFT			1
 #define STAT_C_CHG_TERM				BIT(5)
 #define STAT_C_CHARGER_ERROR			BIT(6)
+#define STAT_D					0x3e
+#define STAT_D_APSD_DONE			BIT(3)
+#define STAT_D_APSD_RESULT_MASK			GENMASK(2, 0)
+#define STAT_D_APSD_CDP				1
+#define STAT_D_APSD_DCP				2
+#define STAT_D_APSD_SDP				4
 #define STAT_E					0x3f
 
 #define SMB347_MAX_REGISTER			0x3f
@@ -1092,6 +1098,31 @@ static int smb347_get_charging_status(struct smb347_charger *smb,
 	return status;
 }
 
+static int smb347_get_usb_type(struct smb347_charger *smb)
+{
+	unsigned int val;
+	int ret;
+
+	if (!smb->usb_online || smb->id == SMB358)
+		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	ret = regmap_read(smb->regmap, STAT_D, &val);
+	if (ret)
+		return ret;
+	if (!(val & STAT_D_APSD_DONE))
+		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
+
+	switch (val & STAT_D_APSD_RESULT_MASK) {
+	case STAT_D_APSD_CDP:
+		return POWER_SUPPLY_USB_TYPE_CDP;
+	case STAT_D_APSD_DCP:
+		return POWER_SUPPLY_USB_TYPE_DCP;
+	case STAT_D_APSD_SDP:
+		return POWER_SUPPLY_USB_TYPE_SDP;
+	default:
+		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	}
+}
+
 static int smb347_get_property_locked(struct power_supply *psy,
 				      enum power_supply_property prop,
 				      union power_supply_propval *val)
@@ -1100,6 +1131,15 @@ static int smb347_get_property_locked(struct power_supply *psy,
 	int ret;
 
 	switch (prop) {
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		if (psy->desc->type != POWER_SUPPLY_TYPE_USB)
+			return -EINVAL;
+		ret = smb347_get_usb_type(smb);
+		if (ret < 0)
+			return ret;
+		val->intval = ret;
+		break;
+
 	case POWER_SUPPLY_PROP_STATUS:
 		ret = smb347_get_charging_status(smb, psy);
 		if (ret < 0)
@@ -1188,6 +1228,15 @@ static enum power_supply_property smb347_properties[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
 };
 
+static enum power_supply_property smb347_usb_properties[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_USB_TYPE,
+};
+
 static bool smb347_volatile_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
@@ -1199,6 +1248,7 @@ static bool smb347_volatile_reg(struct device *dev, unsigned int reg)
 	case STAT_A:
 	case STAT_B:
 	case STAT_C:
+	case STAT_D:
 	case STAT_E:
 		return true;
 	}
@@ -1512,8 +1562,12 @@ static const struct power_supply_desc smb347_usb_desc = {
 	.name		= "smb347-usb",
 	.type		= POWER_SUPPLY_TYPE_USB,
 	.get_property	= smb347_get_property,
-	.properties	= smb347_properties,
-	.num_properties	= ARRAY_SIZE(smb347_properties),
+	.properties	= smb347_usb_properties,
+	.num_properties	= ARRAY_SIZE(smb347_usb_properties),
+	.usb_types	= BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+			  BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+			  BIT(POWER_SUPPLY_USB_TYPE_CDP) |
+			  BIT(POWER_SUPPLY_USB_TYPE_DCP),
 };
 
 static const struct regulator_desc smb347_usb_vbus_regulator_desc = {

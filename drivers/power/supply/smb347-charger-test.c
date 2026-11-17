@@ -91,9 +91,66 @@ static void smb347_command_update_uses_chip_state(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, bus->regs[CMD_A], 0x80);
 }
 
+static void smb347_usb_type_reports_only_known_apsd_codes(struct kunit *test)
+{
+	static const struct {
+		u8 status;
+		int type;
+	} cases[] = {
+		{ 0x09, POWER_SUPPLY_USB_TYPE_CDP },
+		{ 0x0a, POWER_SUPPLY_USB_TYPE_DCP },
+		{ 0x0c, POWER_SUPPLY_USB_TYPE_SDP },
+		{ 0x0b, POWER_SUPPLY_USB_TYPE_UNKNOWN },
+		{ 0x0e, POWER_SUPPLY_USB_TYPE_UNKNOWN },
+		{ 0x02, POWER_SUPPLY_USB_TYPE_UNKNOWN },
+	};
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct power_supply psy = { .desc = &smb347_usb_desc };
+	struct smb347_charger smb = { .usb_online = true };
+	union power_supply_propval val;
+	struct regmap *map;
+	int i, ret;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.regmap = map;
+	psy.drv_data = &smb;
+	for (i = 0; i < ARRAY_SIZE(cases); i++) {
+		bus->regs[0x3e] = cases[i].status;
+		ret = smb347_get_property_locked(&psy, POWER_SUPPLY_PROP_USB_TYPE, &val);
+		KUNIT_ASSERT_EQ(test, ret, 0);
+		KUNIT_EXPECT_EQ(test, val.intval, cases[i].type);
+	}
+
+	smb.usb_online = false;
+	bus->regs[0x3e] = 0x0a;
+	ret = smb347_get_property_locked(&psy, POWER_SUPPLY_PROP_USB_TYPE, &val);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, val.intval, POWER_SUPPLY_USB_TYPE_UNKNOWN);
+}
+
+static void smb347_usb_type_is_only_advertised_for_usb(struct kunit *test)
+{
+	bool found_usb = false;
+	bool found_mains = false;
+	int i;
+
+	for (i = 0; i < smb347_usb_desc.num_properties; i++)
+		found_usb |= smb347_usb_desc.properties[i] ==
+			     POWER_SUPPLY_PROP_USB_TYPE;
+	for (i = 0; i < smb347_mains_desc.num_properties; i++)
+		found_mains |= smb347_mains_desc.properties[i] ==
+			       POWER_SUPPLY_PROP_USB_TYPE;
+	KUNIT_EXPECT_TRUE(test, found_usb);
+	KUNIT_EXPECT_FALSE(test, found_mains);
+}
+
 static struct kunit_case smb347_reset_cases[] = {
 	KUNIT_CASE(smb347_config_read_tracks_chip_reset),
 	KUNIT_CASE(smb347_command_update_uses_chip_state),
+	KUNIT_CASE(smb347_usb_type_reports_only_known_apsd_codes),
+	KUNIT_CASE(smb347_usb_type_is_only_advertised_for_usb),
 	{}
 };
 
