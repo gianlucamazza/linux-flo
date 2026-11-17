@@ -194,6 +194,7 @@ static struct mmci_host_ops qcom_variant_ops = {
 	.dma_start = qcom_dma_start,
 	.dma_finalize = mmci_dmae_finalize,
 	.dma_error = mmci_dmae_error,
+	.dma_sync = mmci_dmae_sync,
 };
 
 void qcom_variant_init(struct mmci_host *host)
