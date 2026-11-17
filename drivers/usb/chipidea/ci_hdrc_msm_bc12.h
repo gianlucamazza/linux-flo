@@ -22,6 +22,9 @@ struct ci_msm_bc12_source_state {
 bool ci_msm_bc12_source_complete(struct ci_msm_bc12_source_state *source,
 				  bool vbus_active,
 				  enum ci_msm_bc12_type type);
+bool ci_msm_bc12_source_needs_detection(
+	const struct ci_msm_bc12_source_state *source,
+	bool vbus_active, bool gadget_role);
 
 bool ci_msm_bc12_source_stop(struct ci_msm_bc12_source_state *source,
 			     bool vbus_active, bool gadget_role);

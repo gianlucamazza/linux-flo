@@ -75,6 +75,8 @@ struct ci_hdrc_platform_data {
 #define CI_HDRC_IMX_HSIC_SUSPEND_EVENT		3
 #define CI_HDRC_CONTROLLER_VBUS_EVENT		4
 #define CI_HDRC_CONTROLLER_PULLUP_EVENT		5
+#define CI_HDRC_CONTROLLER_TRANSITION_START_EVENT	6
+#define CI_HDRC_CONTROLLER_TRANSITION_END_EVENT	7
 	int	(*notify_event) (struct ci_hdrc *ci, unsigned event);
 	int	(*set_vbus_draw)(struct ci_hdrc *ci, unsigned int milliamp);
 	struct regulator	*reg_vbus;

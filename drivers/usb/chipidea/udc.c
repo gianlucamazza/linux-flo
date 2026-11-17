@@ -2232,6 +2232,11 @@ static int ci_udc_stop(struct usb_gadget *gadget)
 	struct ci_hdrc *ci = container_of(gadget, struct ci_hdrc, gadget);
 	unsigned long flags;
 
+	if ((ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    ci->platdata->notify_event)
+		ci->platdata->notify_event(ci,
+			CI_HDRC_CONTROLLER_TRANSITION_START_EVENT);
+
 	spin_lock_irqsave(&ci->lock, flags);
 	ci->driver = NULL;
 
@@ -2251,6 +2256,10 @@ static int ci_udc_stop(struct usb_gadget *gadget)
 	spin_unlock_irqrestore(&ci->lock, flags);
 
 	ci_udc_stop_for_otg_fsm(ci);
+	if ((ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    ci->platdata->notify_event)
+		ci->platdata->notify_event(ci,
+			CI_HDRC_CONTROLLER_TRANSITION_END_EVENT);
 	return 0;
 }
 

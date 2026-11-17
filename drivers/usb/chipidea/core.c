@@ -1003,12 +1003,20 @@ static ssize_t role_store(struct device *dev,
 	}
 
 	pm_runtime_get_sync(dev);
+	if ((ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    ci->platdata->notify_event)
+		ci->platdata->notify_event(ci,
+			CI_HDRC_CONTROLLER_TRANSITION_START_EVENT);
 	disable_irq(ci->irq);
 	ci_role_stop(ci);
 	ret = ci_role_start(ci, role);
 	if (!ret && ci->role == CI_ROLE_GADGET)
 		ci_handle_vbus_change(ci);
 	enable_irq(ci->irq);
+	if ((ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    ci->platdata->notify_event)
+		ci->platdata->notify_event(ci,
+			CI_HDRC_CONTROLLER_TRANSITION_END_EVENT);
 	pm_runtime_put_sync(dev);
 	mutex_unlock(&ci->mutex);
 

@@ -52,6 +52,16 @@ bool ci_msm_bc12_source_complete(struct ci_msm_bc12_source_state *source,
 	return changed;
 }
 
+bool ci_msm_bc12_source_needs_detection(
+	const struct ci_msm_bc12_source_state *source,
+	bool vbus_active, bool gadget_role)
+{
+	return vbus_active && gadget_role &&
+		(!source->online ||
+		 (source->usb_type == POWER_SUPPLY_USB_TYPE_UNKNOWN &&
+		  source->current_max <= 100000));
+}
+
 bool ci_msm_bc12_source_stop(struct ci_msm_bc12_source_state *source,
 			     bool vbus_active, bool gadget_role)
 {

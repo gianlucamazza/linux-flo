@@ -60,6 +60,9 @@ struct ci_hdrc_msm {
 	/* Protect the source properties read from power_supply callbacks. */
 	spinlock_t source_lock;
 	struct ci_msm_bc12_source_state source;
+	struct work_struct source_work;
+	bool source_stopping;
+	unsigned int source_transition_depth;
 #endif
 };
 
@@ -201,31 +204,70 @@ static void ci_msm_source_detect(struct ci_hdrc_msm *msm_ci,
 			     !!hw_read_otgsc(ci, OTGSC_BSV), type);
 }
 
-static void ci_msm_source_detect_unbound(struct ci_hdrc_msm *msm_ci,
-					struct ci_hdrc *ci)
+static void ci_msm_source_work(struct work_struct *work)
 {
+	struct ci_hdrc_msm *msm_ci = container_of(work, struct ci_hdrc_msm,
+						  source_work);
+	struct platform_device *child = READ_ONCE(msm_ci->ci);
+	struct ci_hdrc *ci = child ? platform_get_drvdata(child) : NULL;
+	unsigned long flags;
+	u32 otg_irq_enable;
+	bool detect, gadget_id, vbus;
 	int ret;
 
-	if (!msm_ci->source_psy || !ci->ulpi || !ci->phy ||
-	    ci->role != CI_ROLE_GADGET || !ci->vbus_active)
+	if (!ci || !ci_otg_is_fsm_mode(ci))
 		return;
 
-	hw_phymode_configure(ci);
-	ret = phy_init(ci->phy);
-	if (ret)
-		goto err;
+	ret = pm_runtime_resume_and_get(ci->dev->parent);
+	if (ret < 0)
+		return;
 
-	ret = phy_power_on(ci->phy);
-	if (ret)
-		goto exit_phy;
+	/* The OTG state machine shares ci->wq; gadget stop drains this work. */
+	vbus = ci->vbus_active && !!hw_read_otgsc(ci, OTGSC_BSV);
+	gadget_id = !!hw_read_otgsc(ci, OTGSC_ID);
+	spin_lock_irqsave(&msm_ci->source_lock, flags);
+	detect = !msm_ci->source_stopping && !msm_ci->source_transition_depth &&
+		 ci_msm_bc12_source_needs_detection(&msm_ci->source, vbus,
+				    ci->role == CI_ROLE_GADGET && gadget_id);
+	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+	if (!vbus || !gadget_id || ci->role != CI_ROLE_GADGET) {
+		ci_msm_source_update(msm_ci, false, CI_MSM_BC12_UNKNOWN);
+		goto out;
+	}
+	if (!detect || READ_ONCE(ci->driver) ||
+	    READ_ONCE(ci->gadget_pm_active) ||
+	    !ci->ulpi || !ci->phy)
+		goto out;
 
-	ci_msm_source_detect(msm_ci, ci);
-	phy_power_off(ci->phy);
-exit_phy:
-	phy_exit(ci->phy);
-err:
-	if (ret)
-		dev_warn(ci->dev, "USB source PHY initialization failed: %d\n", ret);
+	/* Reset and power up the PHY exactly as the bound gadget does. */
+	disable_irq(ci->irq);
+	otg_irq_enable = hw_read_otgsc(ci, OTGSC_IDIE | OTGSC_BSVIE);
+	ret = hw_device_reset(ci);
+	if (ret) {
+		dev_warn(ci->dev, "USB source controller reset failed: %d\n",
+			 ret);
+		ci_msm_source_update(msm_ci, true, CI_MSM_BC12_UNKNOWN);
+	}
+	ci->platdata->notify_event(ci, CI_HDRC_CONTROLLER_STOPPED_EVENT);
+	hw_write_otgsc(ci, OTGSC_IDIE | OTGSC_BSVIE, otg_irq_enable);
+	if (!hw_read_otgsc(ci, OTGSC_BSV) ||
+	    !hw_read_otgsc(ci, OTGSC_ID))
+		ci_msm_source_update(msm_ci, false, CI_MSM_BC12_UNKNOWN);
+	enable_irq(ci->irq);
+out:
+	pm_runtime_put(ci->dev->parent);
+}
+
+static void ci_msm_source_queue(struct ci_hdrc_msm *msm_ci,
+				struct ci_hdrc *ci)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&msm_ci->source_lock, flags);
+	if (!msm_ci->source_stopping && !msm_ci->source_transition_depth &&
+	    READ_ONCE(msm_ci->ci) && ci_otg_is_fsm_mode(ci) && ci->wq)
+		queue_work(ci->wq, &msm_ci->source_work);
+	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
 }
 
 static int ci_msm_source_register(struct platform_device *pdev,
@@ -243,6 +285,7 @@ static int ci_msm_source_register(struct platform_device *pdev,
 		return 0;
 
 	spin_lock_init(&msm_ci->source_lock);
+	INIT_WORK(&msm_ci->source_work, ci_msm_source_work);
 	msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s-source", dev_name(&pdev->dev));
 	if (!name)
@@ -354,7 +397,43 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 		ci_msm_source_update(msm_ci, ci->vbus_active,
 				     CI_MSM_BC12_UNKNOWN);
 		if (!ci->driver)
-			ci_msm_source_detect_unbound(msm_ci, ci);
+			ci_msm_source_queue(msm_ci, ci);
+#endif
+		break;
+	case CI_HDRC_CONTROLLER_TRANSITION_START_EVENT:
+#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
+		if (msm_ci->source_psy) {
+			unsigned long flags;
+
+			spin_lock_irqsave(&msm_ci->source_lock, flags);
+			msm_ci->source_transition_depth++;
+			spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+			cancel_work_sync(&msm_ci->source_work);
+		}
+#endif
+		break;
+	case CI_HDRC_CONTROLLER_TRANSITION_END_EVENT:
+#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
+		if (msm_ci->source_psy) {
+			unsigned long flags;
+			bool ready;
+
+			spin_lock_irqsave(&msm_ci->source_lock, flags);
+			if (WARN_ON_ONCE(!msm_ci->source_transition_depth)) {
+				spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+				break;
+			}
+			ready = !--msm_ci->source_transition_depth;
+			spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+			if (!ready)
+				break;
+			if (ci->role != CI_ROLE_GADGET || !ci->vbus_active ||
+			    !hw_read_otgsc(ci, OTGSC_BSV))
+				ci_msm_source_update(msm_ci, false,
+						     CI_MSM_BC12_UNKNOWN);
+			else
+				ci_msm_source_queue(msm_ci, ci);
+		}
 #endif
 		break;
 	case CI_HDRC_CONTROLLER_STOPPED_EVENT:
@@ -513,11 +592,18 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 		goto err_mux;
 	}
 
-	ci->ci = plat_ci;
-
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_no_callbacks(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
+	WRITE_ONCE(ci->ci, plat_ci);
+#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
+	if (ci->source_psy) {
+		struct ci_hdrc *child = platform_get_drvdata(plat_ci);
+
+		if (child)
+			ci_msm_source_queue(ci, child);
+	}
+#endif
 
 	return 0;
 
@@ -532,6 +618,16 @@ static void ci_hdrc_msm_remove(struct platform_device *pdev)
 {
 	struct ci_hdrc_msm *ci = platform_get_drvdata(pdev);
 
+#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
+	if (ci->source_psy) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&ci->source_lock, flags);
+		ci->source_stopping = true;
+		spin_unlock_irqrestore(&ci->source_lock, flags);
+		cancel_work_sync(&ci->source_work);
+	}
+#endif
 	pm_runtime_disable(&pdev->dev);
 	ci_hdrc_remove_device(ci->ci);
 	clk_disable_unprepare(ci->iface_clk);
