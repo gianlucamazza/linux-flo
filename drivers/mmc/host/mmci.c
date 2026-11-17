@@ -1152,10 +1152,9 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct mmci_dmae_next *next = &dmae->next_data;
 
-	if (!host->use_dma)
+	/* Synchronous commands may run while a later request is pre-mapped. */
+	if (!host->use_dma || !data->host_cookie)
 		return;
-
-	WARN_ON(!data->host_cookie && (next->desc || next->chan));
 
 	dmae->desc_current = next->desc;
 	dmae->cur = next->chan;
@@ -2722,3 +2721,7 @@ module_param(fmax, uint, 0444);
 
 MODULE_DESCRIPTION("ARM PrimeCell PL180/181 Multimedia Card Interface driver");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_MMC_ARMMMCI_KUNIT_TEST)
+#include "mmci-test.c"
+#endif
