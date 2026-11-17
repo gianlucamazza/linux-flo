@@ -205,6 +205,10 @@ static void smb347_input_event_read_failure_preserves_charging_state(struct kuni
 
 static void smb347_inok_restores_config_without_online_transition(struct kunit *test)
 {
+	static const struct property_entry properties[] = {
+		PROPERTY_ENTRY_BOOL("power-supplies"),
+		{ }
+	};
 	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
 	struct smb347_charger smb = {
 		.id = SMB345,
@@ -222,21 +226,25 @@ static void smb347_inok_restores_config_without_online_transition(struct kunit *
 	struct device *dev;
 	struct regmap *map;
 	unsigned int current_writes, pin_writes;
+	int ret;
 
 	KUNIT_ASSERT_NOT_NULL(test, bus);
 	dev = kunit_device_register(test, "smb347-inok-reset");
 	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	ret = device_create_managed_software_node(dev, properties, NULL);
+	KUNIT_ASSERT_EQ(test, ret, 0);
 	map = smb347_test_regmap(test, bus);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
 	smb.dev = dev;
 	smb.regmap = map;
+	mutex_init(&smb.usb_policy_lock);
 	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
 	bus->regs[CFG_PIN] = 0x70;
 	bus->regs[IRQSTAT_E] = 0;
 
 	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT] & CFG_CURRENT_LIMIT_USB_MASK,
-			5);
+			1);
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_EN_CTRL_MASK,
 			CFG_PIN_EN_CTRL_ACTIVE_LOW);
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_USB_MODE_CTRL, 0);
@@ -319,8 +327,121 @@ static void smb345_flo_usb_input_current_indices(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, current_to_hw(table, count, 1199999), 3);
 }
 
+static void smb345_usb_source_policy_limits(struct kunit *test)
+{
+	struct smb347_usb_policy policy;
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_UNKNOWN,
+					  100000, 1200000);
+	KUNIT_EXPECT_EQ(test, policy.mode, 0);
+	KUNIT_EXPECT_EQ(test, policy.icl_ua, 500000U);
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_SDP,
+					  500000, 1200000);
+	KUNIT_EXPECT_EQ(test, policy.mode, CMD_B_USB_500_MODE);
+	KUNIT_EXPECT_EQ(test, policy.icl_ua, 500000U);
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_SDP,
+					  250000, 1200000);
+	KUNIT_EXPECT_EQ(test, policy.mode, 0);
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_DCP, 1200000,
+					  1200000);
+	KUNIT_EXPECT_EQ(test, policy.mode, CMD_B_USB_HC_MODE);
+	KUNIT_EXPECT_EQ(test, policy.icl_ua, 1200000U);
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_CDP, 1200000,
+					  900000);
+	KUNIT_EXPECT_EQ(test, policy.mode, CMD_B_USB_HC_MODE);
+	KUNIT_EXPECT_EQ(test, policy.icl_ua, 900000U);
+}
+
+static void smb345_usb_source_policy_programs_chip(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = {
+		.id = SMB345,
+		.usb_online = true,
+		.irq_unsupported = true,
+	};
+	struct smb347_usb_policy policy;
+	struct regmap *map;
+	struct device *dev;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	dev = kunit_device_register(test, "smb345-source-policy");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.dev = dev;
+	smb.regmap = map;
+	bus->regs[CFG_AICL] = CFG_AICL_ENABLED;
+	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_DCP, 1200000,
+					  1200000);
+	KUNIT_ASSERT_EQ(test, smb347_apply_usb_policy_locked(&smb, policy), 0);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_B] & 0x03, CMD_B_USB_HC_MODE);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT] & 0x0f, 4);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_AICL] & CFG_AICL_ENABLED,
+			CFG_AICL_ENABLED);
+	KUNIT_EXPECT_EQ(test, smb.usb_current_max, 1200000U);
+
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_SDP, 500000,
+					  1200000);
+	KUNIT_ASSERT_EQ(test, smb347_apply_usb_policy_locked(&smb, policy), 0);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_B] & 0x03, CMD_B_USB_500_MODE);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT] & 0x0f, 1);
+	KUNIT_EXPECT_EQ(test, smb.usb_current_max, 500000U);
+
+	bus->fail_write = true;
+	bus->fail_write_reg = CFG_CURRENT_LIMIT;
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_DCP, 1200000,
+					  1200000);
+	KUNIT_EXPECT_EQ(test, smb347_apply_usb_policy_locked(&smb, policy), -EIO);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_B] & 0x03, 0);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_AICL] & CFG_AICL_ENABLED,
+			CFG_AICL_ENABLED);
+}
+
+static void smb347_without_usb_supplier_preserves_pin_mode(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = {
+		.id = SMB347,
+		.use_usb = true,
+		.irq_unsupported = true,
+		.enable_control = SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW,
+		.soft_cold_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.soft_hot_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.hard_cold_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.hard_hot_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.soft_temp_limit_compensation = SMB3XX_SOFT_TEMP_COMPENSATE_DEFAULT,
+	};
+	struct regmap *map;
+	struct device *dev;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	dev = kunit_device_register(test, "smb347-no-source");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.dev = dev;
+	smb.regmap = map;
+	bus->regs[CFG_PIN] = CFG_PIN_USB_MODE_CTRL;
+	bus->regs[IRQSTAT_E] = IRQSTAT_E_USBIN_UV_STAT;
+
+	KUNIT_ASSERT_EQ(test, smb347_hw_init(&smb), 0);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_USB_MODE_CTRL,
+			CFG_PIN_USB_MODE_CTRL);
+	KUNIT_EXPECT_EQ(test, bus->writes[CMD_B], 0U);
+}
+
 static struct kunit_case smb347_reset_cases[] = {
 	KUNIT_CASE(smb345_flo_usb_input_current_indices),
+	KUNIT_CASE(smb345_usb_source_policy_limits),
+	KUNIT_CASE(smb345_usb_source_policy_programs_chip),
+	KUNIT_CASE(smb347_without_usb_supplier_preserves_pin_mode),
 	KUNIT_CASE(smb347_config_read_tracks_chip_reset),
 	KUNIT_CASE(smb347_command_update_uses_chip_state),
 	KUNIT_CASE(smb347_usb_type_reports_only_known_apsd_codes),

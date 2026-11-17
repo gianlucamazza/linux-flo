@@ -16,6 +16,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
+#include <linux/mutex.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
@@ -44,6 +45,8 @@
 #define CFG_CURRENT_LIMIT_DC_MASK		0xf0
 #define CFG_CURRENT_LIMIT_DC_SHIFT		4
 #define CFG_CURRENT_LIMIT_USB_MASK		0x0f
+#define CFG_AICL				0x02
+#define CFG_AICL_ENABLED			BIT(4)
 #define CFG_FLOAT_VOLTAGE			0x03
 #define CFG_FLOAT_VOLTAGE_FLOAT_MASK		0x3f
 #define CFG_FLOAT_VOLTAGE_THRESHOLD_MASK	0xc0
@@ -100,6 +103,8 @@
 #define CMD_A_OTG_ENABLED			BIT(4)
 #define CMD_A_ALLOW_WRITE			BIT(7)
 #define CMD_B					0x31
+#define CMD_B_USB_HC_MODE			BIT(0)
+#define CMD_B_USB_500_MODE			BIT(1)
 #define CMD_C					0x33
 
 /* Interrupt Status registers */
@@ -183,6 +188,9 @@
  *		    (driver/pin controls)
  * @inok_polarity: polarity of INOK signal which denotes presence of external
  *		   power supply
+ * @usb_policy_lock: serializes source current updates with charger reset
+ * @usb_policy_ready: hardware configuration has completed at least once
+ * @usb_current_max: effective USB input budget selected by this driver
  *
  * @use_main, @use_usb, and @use_usb_otg are means to enable/disable
  * hardware support for these. This is useful when we want to have for
@@ -212,6 +220,10 @@ struct smb347_charger {
 	bool			irq_unsupported;
 	bool			usb_vbus_enabled;
 	int			inok_irq;
+	/* Guards charger resets and USB source current updates. */
+	struct mutex		usb_policy_lock;
+	bool			usb_policy_ready;
+	unsigned int		usb_current_max;
 
 	unsigned int		max_charge_current;
 	unsigned int		max_charge_voltage;
@@ -241,6 +253,38 @@ enum smb_charger_chipid {
 	SMB358,
 	NUM_CHIP_TYPES,
 };
+
+struct smb347_usb_policy {
+	unsigned int icl_ua;
+	unsigned int mode;
+};
+
+static struct smb347_usb_policy
+smb347_usb_source_policy(enum power_supply_usb_type type,
+			 unsigned int source_ua, unsigned int device_ua)
+{
+	struct smb347_usb_policy policy = {
+		.icl_ua = 500000,
+	};
+	unsigned int allowed_ua = min(source_ua, device_ua);
+
+	if (type == POWER_SUPPLY_USB_TYPE_SDP) {
+		if (allowed_ua >= 500000)
+			policy.mode = CMD_B_USB_500_MODE;
+	} else if ((type == POWER_SUPPLY_USB_TYPE_CDP ||
+		    type == POWER_SUPPLY_USB_TYPE_DCP) && allowed_ua >= 300000) {
+		policy.icl_ua = allowed_ua;
+		policy.mode = CMD_B_USB_HC_MODE;
+	}
+
+	return policy;
+}
+
+static bool smb347_has_usb_source(struct smb347_charger *smb)
+{
+	return smb->id == SMB345 && smb->use_usb &&
+	       device_property_present(smb->dev, "power-supplies");
+}
 
 /* Fast charge current in uA */
 static const unsigned int fcc_tbl[NUM_CHIP_TYPES][8] = {
@@ -515,8 +559,12 @@ static int smb347_set_current_limits(struct smb347_charger *smb)
 	}
 
 	if (smb->usb_hc_current_limit) {
+		unsigned int usb_limit = smb->usb_hc_current_limit;
+
+		if (smb347_has_usb_source(smb))
+			usb_limit = min(usb_limit, 500000U);
 		ret = current_to_hw(icl_tbl[id], ARRAY_SIZE(icl_tbl[id]),
-				    smb->usb_hc_current_limit);
+				    usb_limit);
 		if (ret < 0)
 			return ret;
 
@@ -740,6 +788,18 @@ static int smb347_hw_init(struct smb347_charger *smb)
 	ret = smb347_set_writable(smb, true, false);
 	if (ret < 0)
 		return ret;
+	if (smb347_has_usb_source(smb)) {
+		/* A new input starts at the USB 100 mA budget. */
+		ret = regmap_update_bits(smb->regmap, CMD_B,
+					 CMD_B_USB_HC_MODE | CMD_B_USB_500_MODE, 0);
+		if (ret < 0)
+			goto fail;
+		ret = regmap_clear_bits(smb->regmap, CFG_PIN,
+					CFG_PIN_USB_MODE_CTRL);
+		if (ret < 0)
+			goto fail;
+		smb->usb_current_max = 100000;
+	}
 
 	/*
 	 * Program the platform specific configuration values to the device
@@ -795,8 +855,7 @@ static int smb347_hw_init(struct smb347_charger *smb)
 		break;
 	}
 
-	ret = regmap_update_bits(smb->regmap, CFG_PIN,
-				 CFG_PIN_EN_CTRL_MASK | CFG_PIN_USB_MODE_CTRL,
+	ret = regmap_update_bits(smb->regmap, CFG_PIN, CFG_PIN_EN_CTRL_MASK,
 				 val);
 	if (ret < 0)
 		goto fail;
@@ -817,9 +876,120 @@ fail:
 	return ret;
 }
 
+static int smb347_apply_usb_policy_locked(struct smb347_charger *smb,
+					  struct smb347_usb_policy policy)
+{
+	unsigned int aicl, old_icl;
+	int index, ret, restore_ret;
+
+	if (!smb->usb_online)
+		return 0;
+
+	index = current_to_hw(icl_tbl[smb->id], ARRAY_SIZE(icl_tbl[smb->id]),
+			      policy.icl_ua);
+	if (index < 0)
+		return index;
+
+	ret = smb347_set_writable(smb, true, false);
+	if (ret < 0)
+		return ret;
+
+	/* Lower the mode before changing the input current limit. */
+	ret = regmap_update_bits(smb->regmap, CMD_B,
+				 CMD_B_USB_HC_MODE | CMD_B_USB_500_MODE, 0);
+	if (ret < 0)
+		goto out;
+
+	ret = regmap_read(smb->regmap, CFG_CURRENT_LIMIT, &old_icl);
+	if (ret < 0)
+		goto out;
+	if ((old_icl & CFG_CURRENT_LIMIT_USB_MASK) != index) {
+		ret = regmap_read(smb->regmap, CFG_AICL, &aicl);
+		if (ret < 0)
+			goto out;
+		if (aicl & CFG_AICL_ENABLED) {
+			ret = regmap_clear_bits(smb->regmap, CFG_AICL,
+						CFG_AICL_ENABLED);
+			if (ret < 0)
+				goto out;
+		}
+		ret = regmap_update_bits(smb->regmap, CFG_CURRENT_LIMIT,
+					 CFG_CURRENT_LIMIT_USB_MASK, index);
+		if (aicl & CFG_AICL_ENABLED) {
+			msleep(20);
+			restore_ret = regmap_set_bits(smb->regmap, CFG_AICL,
+						      CFG_AICL_ENABLED);
+			if (!ret)
+				ret = restore_ret;
+		}
+		if (ret < 0)
+			goto out;
+	}
+
+	ret = regmap_update_bits(smb->regmap, CMD_B,
+				 CMD_B_USB_HC_MODE | CMD_B_USB_500_MODE,
+				 policy.mode);
+	if (!ret)
+		smb->usb_current_max = policy.mode == CMD_B_USB_HC_MODE ?
+			policy.icl_ua : policy.mode == CMD_B_USB_500_MODE ?
+			500000 : 100000;
+out:
+	restore_ret = smb347_set_writable(smb, false, false);
+	return ret ?: restore_ret;
+}
+
+static int smb347_source_get(struct smb347_charger *smb,
+			     enum power_supply_property prop,
+			     union power_supply_propval *val)
+{
+	return power_supply_get_property_from_supplier(smb->usb, prop, val);
+}
+
+static int smb347_update_usb_source_locked(struct smb347_charger *smb)
+{
+	union power_supply_propval val;
+	enum power_supply_usb_type type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	unsigned int source_ua = 100000;
+	int ret;
+
+	if (!smb347_has_usb_source(smb) || !smb->usb_policy_ready)
+		return 0;
+
+	ret = smb347_source_get(smb, POWER_SUPPLY_PROP_ONLINE, &val);
+	if (!ret && val.intval) {
+		ret = smb347_source_get(smb, POWER_SUPPLY_PROP_USB_TYPE, &val);
+		if (!ret) {
+			type = val.intval;
+			ret = smb347_source_get(smb, POWER_SUPPLY_PROP_CURRENT_MAX,
+						&val);
+			if (!ret && val.intval > 0)
+				source_ua = val.intval;
+			else
+				type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		}
+	}
+
+	return smb347_apply_usb_policy_locked(smb,
+			smb347_usb_source_policy(type, source_ua,
+						 smb->usb_hc_current_limit));
+}
+
+static void smb347_external_power_changed(struct power_supply *psy)
+{
+	struct smb347_charger *smb = power_supply_get_drvdata(psy);
+	int ret;
+
+	mutex_lock(&smb->usb_policy_lock);
+	ret = smb347_update_usb_source_locked(smb);
+	mutex_unlock(&smb->usb_policy_lock);
+	if (ret < 0)
+		dev_warn(smb->dev, "failed to apply USB source limit: %d\n", ret);
+}
+
 static int smb347_recover_after_inok(struct smb347_charger *smb)
 {
 	int changed, ret, chip_irq = -1;
+	bool source_policy = smb347_has_usb_source(smb);
 
 	changed = smb347_update_ps_status(smb);
 	if (changed < 0)
@@ -838,7 +1008,13 @@ static int smb347_recover_after_inok(struct smb347_charger *smb)
 		disable_irq(chip_irq);
 	}
 
+	if (source_policy)
+		mutex_lock(&smb->usb_policy_lock);
 	ret = smb347_hw_init(smb);
+	if (!ret && source_policy && !changed)
+		ret = smb347_update_usb_source_locked(smb);
+	if (source_policy)
+		mutex_unlock(&smb->usb_policy_lock);
 	if (ret < 0)
 		dev_warn(smb->dev, "failed to restore charger configuration: %d\n",
 			 ret);
@@ -1362,6 +1538,7 @@ static bool smb347_readable_reg(struct device *dev, unsigned int reg)
 	switch (reg) {
 	case CFG_CHARGE_CURRENT:
 	case CFG_CURRENT_LIMIT:
+	case CFG_AICL:
 	case CFG_FLOAT_VOLTAGE:
 	case CFG_STAT:
 	case CFG_PIN:
@@ -1663,6 +1840,7 @@ static const struct power_supply_desc smb347_usb_desc = {
 	.name		= "smb347-usb",
 	.type		= POWER_SUPPLY_TYPE_USB,
 	.get_property	= smb347_get_property,
+	.external_power_changed = smb347_external_power_changed,
 	.properties	= smb347_usb_properties,
 	.num_properties	= ARRAY_SIZE(smb347_usb_properties),
 	.usb_types	= BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
@@ -1699,6 +1877,7 @@ static int smb347_probe(struct i2c_client *client)
 	smb->dev = &client->dev;
 	smb->id = id->driver_data;
 	smb->inok_irq = -1;
+	mutex_init(&smb->usb_policy_lock);
 	i2c_set_clientdata(client, smb);
 
 	smb347_dt_parse_dev_info(smb);
@@ -1732,6 +1911,9 @@ static int smb347_probe(struct i2c_client *client)
 	ret = smb347_hw_init(smb);
 	if (ret < 0)
 		return ret;
+	smb->usb_policy_ready = true;
+	if (smb347_has_usb_source(smb))
+		smb347_external_power_changed(smb->usb);
 
 	ret = smb347_irq_init(smb, client);
 	if (ret)
