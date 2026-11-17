@@ -27,6 +27,7 @@
 #include "dsi.xml.h"
 #include "sfpb.xml.h"
 #include "dsi_cfg.h"
+#include "dsi_trace.h"
 #include "msm_dsc_helper.h"
 #include "msm_kms.h"
 #include "msm_gem.h"
@@ -1222,8 +1223,12 @@ static int dsi_wait4video_done(struct msm_dsi_host *msm_host)
 	struct device *dev = &msm_host->pdev->dev;
 
 	/* V2 video streams synchronize to the MDP frame completion. */
-	if (msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_V2)
-		return msm_dsi_manager_wait_for_vblank(msm_host->id);
+	if (msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_V2) {
+		int ret = msm_dsi_manager_wait_for_vblank(msm_host->id);
+
+		trace_msm_dsi_phase(msm_host->id, "mdp_vblank_wait", ret);
+		return ret;
+	}
 
 	reinit_completion(&msm_host->video_comp);
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_VIDEO_DONE, 1);
@@ -1247,6 +1252,7 @@ static int dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
 		return 0;
 
 	data = dsi_read(msm_host, REG_DSI_STATUS0);
+	trace_msm_dsi_phase(msm_host->id, "video_status0", data);
 
 	/* if video mode engine is not busy, its because
 	 * either timing engine was not turned on or the
@@ -1490,6 +1496,7 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 
 	triggered = msm_dsi_manager_cmd_xfer_trigger(
 						msm_host->id, dma_base, len);
+	trace_msm_dsi_phase(msm_host->id, "cmd_triggered", triggered);
 	if (triggered) {
 		ret = wait_for_completion_timeout(&msm_host->dma_comp,
 					msecs_to_jiffies(200));
@@ -1501,6 +1508,7 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 	} else {
 		ret = len;
 	}
+	trace_msm_dsi_phase(msm_host->id, "cmd_dma_result", ret);
 
 	return ret;
 }
@@ -1620,6 +1628,7 @@ static void dsi_ack_err_status(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_ACK_ERR_STATUS);
+	trace_msm_dsi_error_reg(msm_host->id, "ack", status);
 
 	if (status) {
 		dsi_write(msm_host, REG_DSI_ACK_ERR_STATUS, status);
@@ -1634,6 +1643,7 @@ static void dsi_timeout_status(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_TIMEOUT_STATUS);
+	trace_msm_dsi_error_reg(msm_host->id, "timeout", status);
 
 	if (status) {
 		dsi_write(msm_host, REG_DSI_TIMEOUT_STATUS, status);
@@ -1646,6 +1656,7 @@ static void dsi_dln0_phy_err(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_DLN0_PHY_ERR);
+	trace_msm_dsi_error_reg(msm_host->id, "dln0_phy", status);
 
 	if (status & (DSI_DLN0_PHY_ERR_DLN0_ERR_ESC |
 			DSI_DLN0_PHY_ERR_DLN0_ERR_SYNC_ESC |
@@ -1662,6 +1673,7 @@ static void dsi_fifo_status(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_FIFO_STATUS);
+	trace_msm_dsi_error_reg(msm_host->id, "fifo", status);
 
 	/* fifo underflow, overflow */
 	if (status) {
@@ -1678,6 +1690,7 @@ static void dsi_status(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_STATUS0);
+	trace_msm_dsi_error_reg(msm_host->id, "status0", status);
 
 	if (status & DSI_STATUS0_INTERLEAVE_OP_CONTENTION) {
 		dsi_write(msm_host, REG_DSI_STATUS0, status);
@@ -1691,6 +1704,7 @@ static void dsi_clk_status(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_CLK_STATUS);
+	trace_msm_dsi_error_reg(msm_host->id, "clk", status);
 
 	if (status & DSI_CLK_STATUS_PLL_UNLOCKED) {
 		dsi_write(msm_host, REG_DSI_CLK_STATUS, status);
@@ -1726,6 +1740,7 @@ static irqreturn_t dsi_host_irq(int irq, void *ptr)
 	isr = dsi_read(msm_host, REG_DSI_INTR_CTRL);
 	dsi_write(msm_host, REG_DSI_INTR_CTRL, isr);
 	spin_unlock_irqrestore(&msm_host->intr_lock, flags);
+	trace_msm_dsi_phase(msm_host->id, "irq", isr);
 
 	DBG("isr=0x%x, id=%d", isr, msm_host->id);
 
@@ -1808,7 +1823,12 @@ static ssize_t dsi_host_transfer(struct mipi_dsi_host *host,
 		return -EINVAL;
 
 	mutex_lock(&msm_host->cmd_mutex);
+	trace_msm_dsi_phase(msm_host->id, "xfer_type", msg->type);
+	if (msg->tx_len && msg->tx_buf)
+		trace_msm_dsi_phase(msm_host->id, "xfer_command",
+					 ((const u8 *)msg->tx_buf)[0]);
 	ret = msm_dsi_manager_cmd_xfer(msm_host->id, msg);
+	trace_msm_dsi_phase(msm_host->id, "xfer_result", ret);
 	mutex_unlock(&msm_host->cmd_mutex);
 
 	return ret;
