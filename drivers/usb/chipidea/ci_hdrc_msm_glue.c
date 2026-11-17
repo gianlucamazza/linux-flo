@@ -57,9 +57,7 @@ struct ci_hdrc_msm {
 	struct power_supply_desc source_desc;
 	/* Protect the source properties read from power_supply callbacks. */
 	spinlock_t source_lock;
-	bool source_online;
-	enum power_supply_usb_type source_type;
-	int source_current_max;
+	struct ci_msm_bc12_source_state source;
 #endif
 };
 
@@ -80,13 +78,13 @@ static int ci_msm_source_get_property(struct power_supply *psy,
 	spin_lock_irqsave(&msm_ci->source_lock, flags);
 	switch (property) {
 	case POWER_SUPPLY_PROP_ONLINE:
-		value->intval = msm_ci->source_online;
+		value->intval = msm_ci->source.online;
 		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
-		value->intval = msm_ci->source_type;
+		value->intval = msm_ci->source.usb_type;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		value->intval = msm_ci->source_current_max;
+		value->intval = msm_ci->source.current_max;
 		break;
 	default:
 		spin_unlock_irqrestore(&msm_ci->source_lock, flags);
@@ -105,24 +103,24 @@ static void ci_msm_source_update(struct ci_hdrc_msm *msm_ci, bool online,
 		return;
 
 	spin_lock_irqsave(&msm_ci->source_lock, flags);
-	msm_ci->source_online = online;
-	msm_ci->source_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
-	msm_ci->source_current_max = online ? 100000 : 0;
+	msm_ci->source.online = online;
+	msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	msm_ci->source.current_max = online ? 100000 : 0;
 	if (online) {
 		switch (type) {
 		case CI_MSM_BC12_SDP:
-			msm_ci->source_type = POWER_SUPPLY_USB_TYPE_SDP;
+			msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_SDP;
 			break;
 		case CI_MSM_BC12_CDP:
-			msm_ci->source_type = POWER_SUPPLY_USB_TYPE_CDP;
-			msm_ci->source_current_max = 1200000;
+			msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_CDP;
+			msm_ci->source.current_max = 1200000;
 			break;
 		case CI_MSM_BC12_DCP:
-			msm_ci->source_type = POWER_SUPPLY_USB_TYPE_DCP;
-			msm_ci->source_current_max = 1200000;
+			msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_DCP;
+			msm_ci->source.current_max = 1200000;
 			break;
 		case CI_MSM_BC12_PROPRIETARY:
-			msm_ci->source_current_max = 1200000;
+			msm_ci->source.current_max = 1200000;
 			break;
 		default:
 			break;
@@ -130,6 +128,22 @@ static void ci_msm_source_update(struct ci_hdrc_msm *msm_ci, bool online,
 	}
 	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
 	power_supply_changed(msm_ci->source_psy);
+}
+
+static void ci_msm_source_stop(struct ci_hdrc_msm *msm_ci,
+			       bool vbus_active, bool gadget_role)
+{
+	unsigned long flags;
+	bool changed;
+
+	if (!msm_ci->source_psy)
+		return;
+	spin_lock_irqsave(&msm_ci->source_lock, flags);
+	changed = ci_msm_bc12_source_stop(&msm_ci->source, vbus_active,
+					   gadget_role);
+	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+	if (changed)
+		power_supply_changed(msm_ci->source_psy);
 }
 
 static int ci_msm_source_set_vbus_draw(struct ci_hdrc *ci, unsigned int milliamp)
@@ -143,12 +157,12 @@ static int ci_msm_source_set_vbus_draw(struct ci_hdrc *ci, unsigned int milliamp
 
 	current_max = min(milliamp, 500U) * 1000;
 	spin_lock_irqsave(&msm_ci->source_lock, flags);
-	if (!msm_ci->source_online ||
-	    msm_ci->source_type != POWER_SUPPLY_USB_TYPE_SDP) {
+	if (!msm_ci->source.online ||
+	    msm_ci->source.usb_type != POWER_SUPPLY_USB_TYPE_SDP) {
 		spin_unlock_irqrestore(&msm_ci->source_lock, flags);
 		return 0;
 	}
-	msm_ci->source_current_max = current_max;
+	msm_ci->source.current_max = current_max;
 	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
 	power_supply_changed(msm_ci->source_psy);
 	return 0;
@@ -245,7 +259,7 @@ static int ci_msm_source_register(struct platform_device *pdev,
 		return 0;
 
 	spin_lock_init(&msm_ci->source_lock);
-	msm_ci->source_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s-source", dev_name(&pdev->dev));
 	if (!name)
 		return -ENOMEM;
@@ -362,19 +376,14 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 	case CI_HDRC_CONTROLLER_STOPPED_EVENT:
 		dev_dbg(dev, "CI_HDRC_CONTROLLER_STOPPED_EVENT received\n");
 #if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
-		ci_msm_source_update(msm_ci, ci->vbus_active &&
-				     ci->role == CI_ROLE_GADGET,
-				     CI_MSM_BC12_UNKNOWN);
+		ci_msm_source_stop(msm_ci, ci->vbus_active,
+				   ci->role == CI_ROLE_GADGET);
 #endif
 		if (msm_ci->gadget_phy_on) {
 			msm_ci->gadget_phy_on = false;
 			phy_power_off(ci->phy);
 			phy_exit(ci->phy);
 		}
-#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
-		if (!ci->driver)
-			ci_msm_source_detect_unbound(msm_ci, ci);
-#endif
 		break;
 	default:
 		dev_dbg(dev, "unknown ci_hdrc event\n");

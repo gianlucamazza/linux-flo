@@ -13,6 +13,22 @@
 #define SNPS_ALT_INT_LATCH_CLR	0x92
 #define SNPS_ALT_INT_EN_CLR	0x95
 
+bool ci_msm_bc12_source_stop(struct ci_msm_bc12_source_state *source,
+			     bool vbus_active, bool gadget_role)
+{
+	if (vbus_active && gadget_role)
+		return false;
+	if (!source->online &&
+	    source->usb_type == POWER_SUPPLY_USB_TYPE_UNKNOWN &&
+	    !source->current_max)
+		return false;
+
+	source->online = false;
+	source->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	source->current_max = 0;
+	return true;
+}
+
 static int bc12_clear(const struct ci_msm_bc12_io *io)
 {
 	int ret, first;
