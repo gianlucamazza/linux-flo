@@ -406,7 +406,19 @@
 /* OTG */
 &usb1 {
 	dr_mode = "otg";
+	pinctrl-names = "default";
+	pinctrl-0 = <&usb_id_pin>;
 	status = "okay";
+};
+
+&tlmm_pinmux {
+	usb_id_pin: usb-id-state {
+		pins = "gpio77";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		input-enable;
+	};
 };
 
 &pm8921_gpio {
