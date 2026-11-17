@@ -1956,6 +1956,8 @@ static int ci_udc_vbus_draw(struct usb_gadget *_gadget, unsigned ma)
 
 	if (ci->usb_phy)
 		return usb_phy_set_power(ci->usb_phy, ma);
+	if (ci->platdata->set_vbus_draw)
+		return ci->platdata->set_vbus_draw(ci, ma);
 	return -ENOTSUPP;
 }
 

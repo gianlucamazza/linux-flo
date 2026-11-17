@@ -128,6 +128,28 @@ static void ci_msm_source_update(struct ci_hdrc_msm *msm_ci, bool online,
 	power_supply_changed(msm_ci->source_psy);
 }
 
+static int ci_msm_source_set_vbus_draw(struct ci_hdrc *ci, unsigned int milliamp)
+{
+	struct ci_hdrc_msm *msm_ci = dev_get_drvdata(ci->dev->parent);
+	unsigned long flags;
+	int current_max;
+
+	if (!msm_ci->source_psy)
+		return -EOPNOTSUPP;
+
+	current_max = min(milliamp, 500U) * 1000;
+	spin_lock_irqsave(&msm_ci->source_lock, flags);
+	if (!msm_ci->source_online ||
+	    msm_ci->source_type != POWER_SUPPLY_USB_TYPE_SDP) {
+		spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+		return 0;
+	}
+	msm_ci->source_current_max = current_max;
+	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
+	power_supply_changed(msm_ci->source_psy);
+	return 0;
+}
+
 static int ci_msm_bc12_ulpi_read(void *context, u8 address)
 {
 	struct ci_hdrc *ci = context;
@@ -376,6 +398,9 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 			  CI_HDRC_OVERRIDE_AHB_BURST |
 			  CI_HDRC_OVERRIDE_PHY_CONTROL;
 	ci->pdata.notify_event = ci_hdrc_msm_notify_event;
+#if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
+	ci->pdata.set_vbus_draw = ci_msm_source_set_vbus_draw;
+#endif
 
 	reset = devm_reset_control_get(&pdev->dev, "core");
 	if (IS_ERR(reset))

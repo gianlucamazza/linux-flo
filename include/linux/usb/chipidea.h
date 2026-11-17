@@ -75,6 +75,7 @@ struct ci_hdrc_platform_data {
 #define CI_HDRC_CONTROLLER_VBUS_EVENT		4
 #define CI_HDRC_CONTROLLER_PULLUP_EVENT		5
 	int	(*notify_event) (struct ci_hdrc *ci, unsigned event);
+	int	(*set_vbus_draw)(struct ci_hdrc *ci, unsigned int milliamp);
 	struct regulator	*reg_vbus;
 	struct usb_otg_caps	ci_otg_caps;
 	bool			tpl_support;
