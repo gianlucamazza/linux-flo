@@ -29,6 +29,8 @@ properties:
 
   monitored-battery: true
 
+  power-supplies: true
+
   summit,enable-usb-charging:
     type: boolean
     description: Enable charging through USB.

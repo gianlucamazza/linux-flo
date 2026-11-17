@@ -162,6 +162,7 @@
 		summit,usb-current-limit-microamp = <500000>;
 
 		monitored-battery = <&battery>;
+		power-supplies = <&usb1>;
 	};
 };
 
