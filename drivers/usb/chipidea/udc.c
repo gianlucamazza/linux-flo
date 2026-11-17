@@ -1877,9 +1877,11 @@ static int ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
 		}
 		spin_unlock_irq(&ci->lock);
 
-		ret = pm_runtime_resume_and_get(ci->dev);
-		if (ret < 0)
-			return ret;
+		if (ci->supports_runtime_pm) {
+			ret = pm_runtime_resume_and_get(ci->dev);
+			if (ret < 0)
+				return ret;
+		}
 		ret = hw_device_reset(ci);
 		if (ret)
 			goto stop_phy;
@@ -1911,7 +1913,8 @@ static int ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
 			ci->platdata->notify_event(ci,
 			CI_HDRC_CONTROLLER_STOPPED_EVENT);
 		_gadget_stop_activity(&ci->gadget);
-		pm_runtime_put_sync(ci->dev);
+		if (ci->supports_runtime_pm)
+			pm_runtime_put_sync(ci->dev);
 		usb_gadget_set_state(_gadget, USB_STATE_NOTATTACHED);
 	}
 	return 0;
@@ -1919,7 +1922,8 @@ static int ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
 stop_phy:
 	if (ci->platdata->notify_event)
 		ci->platdata->notify_event(ci, CI_HDRC_CONTROLLER_STOPPED_EVENT);
-	pm_runtime_put_sync(ci->dev);
+	if (ci->supports_runtime_pm)
+		pm_runtime_put_sync(ci->dev);
 	return ret;
 }
 
