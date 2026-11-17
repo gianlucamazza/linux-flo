@@ -101,7 +101,12 @@ static void bc12_test_classification(struct kunit *test)
 	state.proprietary = true;
 	ret = ci_msm_bc12_detect(&io, &type);
 	KUNIT_ASSERT_EQ(test, ret, 0);
-	KUNIT_EXPECT_EQ(test, type, CI_MSM_BC12_UNKNOWN);
+	KUNIT_EXPECT_EQ(test, type, CI_MSM_BC12_PROPRIETARY);
+
+	state.primary = false;
+	ret = ci_msm_bc12_detect(&io, &type);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_EQ(test, type, CI_MSM_BC12_PROPRIETARY);
 }
 
 static void bc12_test_error_restores_phy(struct kunit *test)

@@ -272,7 +272,8 @@ smb347_usb_source_policy(enum power_supply_usb_type type,
 		if (allowed_ua >= 500000)
 			policy.mode = CMD_B_USB_500_MODE;
 	} else if ((type == POWER_SUPPLY_USB_TYPE_CDP ||
-		    type == POWER_SUPPLY_USB_TYPE_DCP) && allowed_ua >= 300000) {
+		    type == POWER_SUPPLY_USB_TYPE_DCP ||
+		    type == POWER_SUPPLY_USB_TYPE_UNKNOWN) && allowed_ua >= 300000) {
 		policy.icl_ua = allowed_ua;
 		policy.mode = CMD_B_USB_HC_MODE;
 	}
@@ -966,6 +967,12 @@ static int smb347_update_usb_source_locked(struct smb347_charger *smb)
 				source_ua = val.intval;
 			else
 				type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+			ret = smb347_source_get(smb, POWER_SUPPLY_PROP_ONLINE,
+						&val);
+			if (ret || !val.intval) {
+				type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+				source_ua = 100000;
+			}
 		}
 	}
 

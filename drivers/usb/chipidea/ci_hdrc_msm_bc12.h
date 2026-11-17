@@ -9,6 +9,7 @@ enum ci_msm_bc12_type {
 	CI_MSM_BC12_SDP,
 	CI_MSM_BC12_CDP,
 	CI_MSM_BC12_DCP,
+	CI_MSM_BC12_PROPRIETARY,
 };
 
 struct ci_msm_bc12_io {

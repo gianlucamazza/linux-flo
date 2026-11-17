@@ -336,6 +336,11 @@ static void smb345_usb_source_policy_limits(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, policy.mode, 0);
 	KUNIT_EXPECT_EQ(test, policy.icl_ua, 500000U);
 
+	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_UNKNOWN,
+					  1200000, 1200000);
+	KUNIT_EXPECT_EQ(test, policy.mode, CMD_B_USB_HC_MODE);
+	KUNIT_EXPECT_EQ(test, policy.icl_ua, 1200000U);
+
 	policy = smb347_usb_source_policy(POWER_SUPPLY_USB_TYPE_SDP,
 					  500000, 1200000);
 	KUNIT_EXPECT_EQ(test, policy.mode, CMD_B_USB_500_MODE);

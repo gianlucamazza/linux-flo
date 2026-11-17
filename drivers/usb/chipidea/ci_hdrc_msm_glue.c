@@ -121,6 +121,9 @@ static void ci_msm_source_update(struct ci_hdrc_msm *msm_ci, bool online,
 			msm_ci->source_type = POWER_SUPPLY_USB_TYPE_DCP;
 			msm_ci->source_current_max = 1200000;
 			break;
+		case CI_MSM_BC12_PROPRIETARY:
+			msm_ci->source_current_max = 1200000;
+			break;
 		default:
 			break;
 		}

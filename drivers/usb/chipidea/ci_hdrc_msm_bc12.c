@@ -86,17 +86,19 @@ int ci_msm_bc12_detect(const struct ci_msm_bc12_io *io,
 		goto restore;
 	}
 	primary = !!(status & BIT(0));
-	ret = io->write(io->context, SNPS_CHG_CTRL_CLR, 0x03);
-	if (ret)
-		goto restore;
-	io->wait_ms(io->context, 20);
 	status = io->line_state(io->context);
 	if (status < 0) {
 		ret = status;
 		goto restore;
 	}
-	if (status)
+	if (status) {
+		*type = CI_MSM_BC12_PROPRIETARY;
 		goto restore;
+	}
+	ret = io->write(io->context, SNPS_CHG_CTRL_CLR, 0x03);
+	if (ret)
+		goto restore;
+	io->wait_ms(io->context, 20);
 	if (!primary) {
 		*type = CI_MSM_BC12_SDP;
 		goto restore;
