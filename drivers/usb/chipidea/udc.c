@@ -1881,7 +1881,7 @@ static int ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
 		if (ret < 0)
 			return ret;
 		ret = hw_device_reset(ci);
-		if (ret < 0)
+		if (ret)
 			goto stop_phy;
 		spin_lock_irq(&ci->lock);
 		if (ci->driver && ci->vbus_active) {
