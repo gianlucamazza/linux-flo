@@ -39,6 +39,8 @@ int ci_msm_bc12_detect(const struct ci_msm_bc12_io *io,
 	func = io->read(io->context, ULPI_FUNC_CTRL);
 	if (func < 0)
 		return func;
+	/* A PHY reset may clear SUSPENDM; keep ULPI active for detection. */
+	func |= ULPI_FUNC_CTRL_SUSPENDM;
 	otg = io->read(io->context, ULPI_OTG_CTRL);
 	if (otg < 0)
 		return otg;
@@ -95,10 +97,6 @@ int ci_msm_bc12_detect(const struct ci_msm_bc12_io *io,
 		*type = CI_MSM_BC12_PROPRIETARY;
 		goto restore;
 	}
-	ret = io->write(io->context, SNPS_CHG_CTRL_CLR, 0x03);
-	if (ret)
-		goto restore;
-	io->wait_ms(io->context, 20);
 	if (!primary) {
 		*type = CI_MSM_BC12_SDP;
 		goto restore;
@@ -113,7 +111,7 @@ int ci_msm_bc12_detect(const struct ci_msm_bc12_io *io,
 	ret = io->write(io->context, SNPS_CHG_CTRL_SET, 0x01);
 	if (ret)
 		goto restore;
-	io->wait_ms(io->context, 50);
+	io->wait_ms(io->context, 40);
 	status = io->read(io->context, SNPS_CHG_STATUS);
 	if (status < 0) {
 		ret = status;

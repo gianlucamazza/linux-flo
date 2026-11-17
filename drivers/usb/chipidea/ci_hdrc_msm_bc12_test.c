@@ -10,6 +10,8 @@ struct bc12_test_state {
 	bool secondary;
 	bool proprietary;
 	bool failed;
+	bool primary_cleared;
+	bool phy_suspended;
 	unsigned int wait_total_ms;
 };
 
@@ -35,6 +37,22 @@ static int bc12_test_read(void *context, u8 address)
 static int bc12_test_write(void *context, u8 address, u8 value)
 {
 	struct bc12_test_state *state = context;
+
+	if (state->phy_suspended)
+		return -ETIMEDOUT;
+	if (address == ULPI_FUNC_CTRL &&
+	    (value & ULPI_FUNC_CTRL_OPMODE_MASK) ==
+	    ULPI_FUNC_CTRL_OPMODE_NONDRIVING &&
+	    !(value & ULPI_FUNC_CTRL_SUSPENDM))
+		state->phy_suspended = true;
+
+	if (address == 0x86 && value == 0x3f)
+		state->primary_cleared = false;
+	if (address == 0x86 && value == 0x03)
+		state->primary_cleared = true;
+	/* The PHY must stay active between primary and secondary detection. */
+	if (address == 0x85 && value == 0x08 && state->primary_cleared)
+		return -ETIMEDOUT;
 
 	if (address == 0x85 && value == 0x10)
 		state->phase = 1;
@@ -132,9 +150,34 @@ static void bc12_test_error_restores_phy(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, state.otg_control, (u8)0x06);
 }
 
+static void bc12_test_rebind_after_phy_reset(struct kunit *test)
+{
+	struct bc12_test_state state = {
+		.function_control = 0,
+		.otg_control = 0x07,
+		.dcd = true,
+		.primary = true,
+		.secondary = true,
+	};
+	struct ci_msm_bc12_io io = {
+		.context = &state,
+		.read = bc12_test_read,
+		.write = bc12_test_write,
+		.line_state = bc12_test_line_state,
+		.wait_ms = bc12_test_wait,
+	};
+	enum ci_msm_bc12_type type;
+
+	KUNIT_ASSERT_EQ(test, ci_msm_bc12_detect(&io, &type), 0);
+	KUNIT_EXPECT_EQ(test, type, CI_MSM_BC12_DCP);
+	KUNIT_EXPECT_TRUE(test, state.function_control &
+			  ULPI_FUNC_CTRL_SUSPENDM);
+}
+
 static struct kunit_case bc12_test_cases[] = {
 	KUNIT_CASE(bc12_test_classification),
 	KUNIT_CASE(bc12_test_error_restores_phy),
+	KUNIT_CASE(bc12_test_rebind_after_phy_reset),
 	{}
 };
 
