@@ -235,7 +235,7 @@ static void smb347_inok_restores_config_without_online_transition(struct kunit *
 
 	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT] & CFG_CURRENT_LIMIT_USB_MASK,
-			4);
+			5);
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_EN_CTRL_MASK,
 			CFG_PIN_EN_CTRL_ACTIVE_LOW);
 	current_writes = bus->writes[CFG_CURRENT_LIMIT];
@@ -306,7 +306,19 @@ static void smb347_inok_reports_connection_when_restore_write_fails(struct kunit
 	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT], 0x41);
 }
 
+static void smb345_flo_usb_input_current_indices(struct kunit *test)
+{
+	const unsigned int *table = icl_tbl[SMB345];
+	size_t count = ARRAY_SIZE(icl_tbl[SMB345]);
+
+	KUNIT_EXPECT_EQ(test, table[3], 900000U);
+	KUNIT_EXPECT_EQ(test, table[4], 1200000U);
+	KUNIT_EXPECT_EQ(test, current_to_hw(table, count, 1200000), 4);
+	KUNIT_EXPECT_EQ(test, current_to_hw(table, count, 1199999), 3);
+}
+
 static struct kunit_case smb347_reset_cases[] = {
+	KUNIT_CASE(smb345_flo_usb_input_current_indices),
 	KUNIT_CASE(smb347_config_read_tracks_chip_reset),
 	KUNIT_CASE(smb347_command_update_uses_chip_state),
 	KUNIT_CASE(smb347_usb_type_reports_only_known_apsd_codes),
