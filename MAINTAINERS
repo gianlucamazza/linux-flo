@@ -2352,6 +2352,7 @@ F:	include/linux/amba/kmi.h
 ARM PRIMECELL MMCI PL180/1 DRIVER
 M:	Russell King <linux@armlinux.org.uk>
 S:	Odd Fixes
+F:	drivers/mmc/host/mmci-test.c
 F:	drivers/mmc/host/mmci.*
 F:	include/linux/amba/mmci.h
 
