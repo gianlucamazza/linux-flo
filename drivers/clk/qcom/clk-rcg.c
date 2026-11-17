@@ -398,15 +398,26 @@ clk_dyn_rcg_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 
 static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 		struct clk_rate_request *req,
-		const struct parent_map *parent_map)
+		const struct parent_map *parent_map, bool floor)
 {
 	unsigned long clk_flags, rate = req->rate;
 	struct clk_hw *p;
 	int index;
 
-	f = qcom_find_freq(f, rate);
-	if (!f)
+	if (!f || !f->freq)
 		return -EINVAL;
+
+	if (floor) {
+		const struct freq_tbl *first = f;
+
+		f = qcom_find_freq_floor(f, rate);
+		/* MMCI probes below the first supported rate. */
+		if (!f)
+			f = first;
+		rate = f->freq;
+	} else {
+		f = qcom_find_freq(f, rate);
+	}
 
 	index = qcom_find_src_index(hw, parent_map, f->src);
 	if (index < 0)
@@ -438,7 +449,16 @@ static int clk_rcg_determine_rate(struct clk_hw *hw,
 	struct clk_rcg *rcg = to_clk_rcg(hw);
 
 	return _freq_tbl_determine_rate(hw, rcg->freq_tbl, req,
-					rcg->s.parent_map);
+					rcg->s.parent_map, false);
+}
+
+static int clk_rcg_determine_floor_rate(struct clk_hw *hw,
+					struct clk_rate_request *req)
+{
+	struct clk_rcg *rcg = to_clk_rcg(hw);
+
+	return _freq_tbl_determine_rate(hw, rcg->freq_tbl, req,
+					rcg->s.parent_map, true);
 }
 
 static int clk_dyn_rcg_determine_rate(struct clk_hw *hw,
@@ -453,7 +473,7 @@ static int clk_dyn_rcg_determine_rate(struct clk_hw *hw,
 	bank = reg_to_bank(rcg, reg);
 	s = &rcg->s[bank];
 
-	return _freq_tbl_determine_rate(hw, rcg->freq_tbl, req, s->parent_map);
+	return _freq_tbl_determine_rate(hw, rcg->freq_tbl, req, s->parent_map, false);
 }
 
 static int clk_rcg_bypass_determine_rate(struct clk_hw *hw,
@@ -836,7 +856,7 @@ const struct clk_ops clk_rcg_floor_ops = {
 	.get_parent = clk_rcg_get_parent,
 	.set_parent = clk_rcg_set_parent,
 	.recalc_rate = clk_rcg_recalc_rate,
-	.determine_rate = clk_rcg_determine_rate,
+	.determine_rate = clk_rcg_determine_floor_rate,
 	.set_rate = clk_rcg_set_floor_rate,
 };
 EXPORT_SYMBOL_GPL(clk_rcg_floor_ops);
