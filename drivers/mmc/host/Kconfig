@@ -41,8 +41,10 @@ config MMC_ARMMMCI_KUNIT_TEST
 	select DMA_ENGINE
 	default KUNIT_ALL_TESTS
 	help
-	  Test that synchronous MMC commands cannot consume the DMA descriptor
-	  pre-mapped for a later asynchronous block request.
+	  Test streaming DMA mapping ownership across pipelined block requests,
+	  synchronous commands and cancellation. The tests use a recording
+	  DMAengine provider and simulated MMIO, without starting real hardware.
+	  Say N unless you are developing the MMCI DMA lifecycle.
 
 config MMC_QCOM_DML
 	bool "Qualcomm Data Mover for SD Card Controller"

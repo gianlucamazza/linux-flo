@@ -854,17 +854,12 @@ out_ret_state:
  * no custom DMA interfaces are supported.
  */
 #ifdef CONFIG_DMA_ENGINE
-struct mmci_dmae_next {
-	struct dma_async_tx_descriptor *desc;
-	struct dma_chan	*chan;
-};
-
 struct mmci_dmae_priv {
 	struct dma_chan	*cur;
 	struct dma_chan	*rx_channel;
 	struct dma_chan	*tx_channel;
 	struct dma_async_tx_descriptor	*desc_current;
-	struct mmci_dmae_next next_data;
+	struct mmc_data	*data_current;
 };
 
 int mmci_dmae_setup(struct mmci_host *host)
@@ -961,6 +956,9 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct dma_chan *chan;
 
+	if (!data->sg_count)
+		return;
+
 	if (data->flags & MMC_DATA_READ)
 		chan = dmae->rx_channel;
 	else
@@ -968,6 +966,8 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 
 	dma_unmap_sg(chan->device->dev, data->sg, data->sg_len,
 		     mmc_get_dma_dir(data));
+	data->sg_count = 0;
+	data->host_cookie = 0;
 }
 
 void mmci_dmae_error(struct mmci_host *host)
@@ -982,6 +982,7 @@ void mmci_dmae_error(struct mmci_host *host)
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
+	dmae->data_current = NULL;
 	host->data->host_cookie = 0;
 
 	mmci_dma_unmap(host, host->data);
@@ -1030,12 +1031,11 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
+	dmae->data_current = NULL;
 }
 
-/* prepares DMA channel and DMA descriptor, returns non-zero on failure */
-static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
-				struct dma_chan **dma_chan,
-				struct dma_async_tx_descriptor **dma_desc)
+/* Pre-map SGs early, but configure and prepare DMA only for the active request. */
+int mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data, bool next)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct variant_data *variant = host->variant;
@@ -1051,7 +1051,7 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	struct dma_chan *chan;
 	struct dma_device *device;
 	struct dma_async_tx_descriptor *desc;
-	int nr_sg;
+	int nr_sg, ret;
 	unsigned long flags = DMA_CTRL_ACK;
 
 	if (data->flags & MMC_DATA_READ) {
@@ -1061,6 +1061,9 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		conf.direction = DMA_MEM_TO_DEV;
 		chan = dmae->tx_channel;
 	}
+
+	if (!host->use_dma)
+		return -EINVAL;
 
 	/* If there's no DMA channel, fall back to PIO */
 	if (!chan)
@@ -1083,50 +1086,41 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		return -EINVAL;
 
 	device = chan->device;
-	nr_sg = dma_map_sg(device->dev, data->sg, data->sg_len,
-			   mmc_get_dma_dir(data));
-	if (nr_sg == 0)
-		return -EINVAL;
+	nr_sg = data->sg_count;
+	if (!nr_sg) {
+		nr_sg = dma_map_sg(device->dev, data->sg, data->sg_len,
+				   mmc_get_dma_dir(data));
+		if (!nr_sg)
+			return -EINVAL;
+		data->sg_count = nr_sg;
+	}
+
+	/* pre_req may overlap an active transfer on this same DMA channel. */
+	if (next)
+		return 0;
 
 	if (host->variant->qcom_dml)
 		flags |= DMA_PREP_INTERRUPT;
 
-	dmaengine_slave_config(chan, &conf);
+	ret = dmaengine_slave_config(chan, &conf);
+	if (ret)
+		goto unmap_exit;
 	desc = dmaengine_prep_slave_sg(chan, data->sg, nr_sg,
 					    conf.direction, flags);
-	if (!desc)
+	if (!desc) {
+		ret = -ENOMEM;
 		goto unmap_exit;
+	}
 
-	*dma_chan = chan;
-	*dma_desc = desc;
+	dmae->cur = chan;
+	dmae->desc_current = desc;
+	dmae->data_current = data;
 
 	return 0;
 
  unmap_exit:
-	dma_unmap_sg(device->dev, data->sg, data->sg_len,
-		     mmc_get_dma_dir(data));
-	return -ENOMEM;
-}
-
-int mmci_dmae_prep_data(struct mmci_host *host,
-			struct mmc_data *data,
-			bool next)
-{
-	struct mmci_dmae_priv *dmae = host->dma_priv;
-	struct mmci_dmae_next *nd = &dmae->next_data;
-
-	if (!host->use_dma)
-		return -EINVAL;
-
-	if (next)
-		return _mmci_dmae_prep_data(host, data, &nd->chan, &nd->desc);
-	/* Check if next job is already prepared. */
-	if (dmae->cur && dmae->desc_current)
-		return 0;
-
-	/* No job were prepared thus do it now. */
-	return _mmci_dmae_prep_data(host, data, &dmae->cur,
-				    &dmae->desc_current);
+	mmci_dma_unmap(host, data);
+	return ret;
 }
 
 int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
@@ -1147,59 +1141,17 @@ int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
 	return 0;
 }
 
-void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
-{
-	struct mmci_dmae_priv *dmae = host->dma_priv;
-	struct mmci_dmae_next *next = &dmae->next_data;
-
-	/* Synchronous commands may run while a later request is pre-mapped. */
-	if (!host->use_dma || !data->host_cookie)
-		return;
-
-	dmae->desc_current = next->desc;
-	dmae->cur = next->chan;
-	next->desc = NULL;
-	next->chan = NULL;
-}
-
 void mmci_dmae_unprep_data(struct mmci_host *host,
 			   struct mmc_data *data, int err)
-
 {
-	struct mmci_dmae_priv *dmae = host->dma_priv;
-
-	if (!host->use_dma)
-		return;
-
+	/* No unsubmitted descriptors exist for pre-mapped requests. */
 	mmci_dma_unmap(host, data);
-
-	if (err) {
-		struct mmci_dmae_next *next = &dmae->next_data;
-		struct dma_chan *chan;
-		if (data->flags & MMC_DATA_READ)
-			chan = dmae->rx_channel;
-		else
-			chan = dmae->tx_channel;
-		dmaengine_terminate_all(chan);
-
-		if (dmae->desc_current == next->desc)
-			dmae->desc_current = NULL;
-
-		if (dmae->cur == next->chan) {
-			host->dma_in_progress = false;
-			dmae->cur = NULL;
-		}
-
-		next->desc = NULL;
-		next->chan = NULL;
-	}
 }
 
 static struct mmci_host_ops mmci_variant_ops = {
 	.prep_data = mmci_dmae_prep_data,
 	.unprep_data = mmci_dmae_unprep_data,
 	.get_datactrl_cfg = mmci_get_dctrl_cfg,
-	.get_next_data = mmci_dmae_get_next_data,
 	.dma_setup = mmci_dmae_setup,
 	.dma_release = mmci_dmae_release,
 	.dma_start = mmci_dmae_start,
