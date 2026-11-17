@@ -257,6 +257,7 @@ enum rproc_features {
  * @bootaddr: address of first instruction to boot rproc with (optional)
  * @rvdevs: list of remote virtio devices
  * @subdevs: list of subdevices, to following the running state
+ * @subdevs_started: subdevice start completed and has not been stopped
  * @notifyids: idr for dynamically assigning rproc-wide unique notify ids
  * @index: index of this rproc device
  * @crash_handler: workqueue for handling a crash
@@ -299,6 +300,7 @@ struct rproc {
 	u64 bootaddr;
 	struct list_head rvdevs;
 	struct list_head subdevs;
+	bool subdevs_started;
 	struct idr notifyids;
 	int index;
 	struct work_struct crash_handler;

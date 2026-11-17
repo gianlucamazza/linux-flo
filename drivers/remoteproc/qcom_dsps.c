@@ -157,7 +157,19 @@ static int dsps_load(struct rproc *rproc, const struct firmware *fw)
 	}
 	/* Complete SRAM/DDR writes before PAS can release the processor. */
 	wmb();
-	ret = qcom_register_dump_segments(rproc, fw);
+	/* TCM and pipe MMIO may be inaccessible after PAS shuts the core off. */
+	ret = 0;
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		if (phdr[i].p_type != PT_LOAD || !phdr[i].p_memsz ||
+		    (phdr[i].p_flags & QCOM_MDT_TYPE_MASK) == QCOM_MDT_TYPE_HASH ||
+		    phdr[i].p_paddr < DSPS_DDR_BASE ||
+		    phdr[i].p_paddr - DSPS_DDR_BASE >= DSPS_DDR_SIZE)
+			continue;
+		ret = rproc_coredump_add_segment(rproc, phdr[i].p_paddr,
+						 phdr[i].p_memsz);
+		if (ret)
+			break;
+	}
 
 release_blobs:
 	for (i = 0; i < ehdr->e_phnum; i++)
@@ -171,13 +183,16 @@ static int dsps_start(struct rproc *rproc)
 	struct qcom_dsps *dsps = rproc->priv;
 	int ret;
 
-	ret = qcom_scm_pas_auth_and_reset(DSPS_PAS_ID);
-	if (ret)
-		return ret;
-
 	enable_irq(dsps->watchdog_irq);
 	enable_irq(dsps->fatal_irq);
 	dsps->irqs_enabled = true;
+	ret = qcom_scm_pas_auth_and_reset(DSPS_PAS_ID);
+	if (ret) {
+		disable_irq(dsps->watchdog_irq);
+		disable_irq(dsps->fatal_irq);
+		dsps->irqs_enabled = false;
+		return ret;
+	}
 	return 0;
 }
 

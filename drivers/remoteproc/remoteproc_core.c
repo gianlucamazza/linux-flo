@@ -1099,6 +1099,7 @@ static int rproc_start_subdevices(struct rproc *rproc)
 		}
 	}
 
+	rproc->subdevs_started = true;
 	return 0;
 
 unroll_registration:
@@ -1113,6 +1114,11 @@ unroll_registration:
 static void rproc_stop_subdevices(struct rproc *rproc, bool crashed)
 {
 	struct rproc_subdev *subdev;
+
+	/* A failed processor stop may be retried after subdevices stopped. */
+	if (!rproc->subdevs_started)
+		return;
+	rproc->subdevs_started = false;
 
 	list_for_each_entry_reverse(subdev, &rproc->subdevs, node) {
 		if (subdev->stop)
@@ -1466,8 +1472,7 @@ static int rproc_set_rsc_table(struct rproc *rproc)
 	 *
 	 *      DETACHED -> ATTACHED -> DETACHED -> ATTACHED
 	 *
-	 * Free'd in rproc_reset_rsc_table_on_detach() and
-	 * rproc_reset_rsc_table_on_stop().
+	 * Kept until stop or detach succeeds, so a failed operation can retry.
 	 */
 	if (rproc->ops->detach) {
 		rproc->clean_table = kmemdup(table_ptr, table_sz, GFP_KERNEL);
@@ -1504,16 +1509,17 @@ static int rproc_reset_rsc_table_on_detach(struct rproc *rproc)
 	table_ptr = rproc->table_ptr;
 
 	/*
-	 * If we made it here the remote processor was started by another
-	 * entity and a cache table doesn't exist.  As such make a copy of
-	 * the resource table currently used by the remote processor and
-	 * use that for the rest of the shutdown process.  The memory
-	 * allocated here is free'd in rproc_detach().
+	 * Preserve the active table for a failed detach or later recovery.
+	 * A cache from a previous failed operation can be reused.
 	 */
-	rproc->cached_table = kmemdup(rproc->table_ptr,
-				      rproc->table_sz, GFP_KERNEL);
-	if (!rproc->cached_table)
-		return -ENOMEM;
+	if (rproc->cached_table) {
+		memcpy(rproc->cached_table, rproc->table_ptr, rproc->table_sz);
+	} else {
+		rproc->cached_table = kmemdup(rproc->table_ptr, rproc->table_sz,
+					      GFP_KERNEL);
+		if (!rproc->cached_table)
+			return -ENOMEM;
+	}
 
 	/*
 	 * Use a copy of the resource table for the remainder of the
@@ -1527,12 +1533,6 @@ static int rproc_reset_rsc_table_on_detach(struct rproc *rproc)
 	 * processor the resource table is clean and ready to be used again.
 	 */
 	memcpy(table_ptr, rproc->clean_table, rproc->table_sz);
-
-	/*
-	 * The clean resource table is no longer needed.  Allocated in
-	 * rproc_set_rsc_table().
-	 */
-	kfree(rproc->clean_table);
 
 	return 0;
 }
@@ -1548,8 +1548,12 @@ static int rproc_reset_rsc_table_on_stop(struct rproc *rproc)
 	 * the remoteproc core.  That cache table should be used for
 	 * the rest of the shutdown process.
 	 */
-	if (rproc->cached_table)
+	if (rproc->cached_table) {
+		if (rproc->table_ptr != rproc->cached_table)
+			memcpy(rproc->cached_table, rproc->table_ptr,
+			       rproc->table_sz);
 		goto out;
+	}
 
 	/*
 	 * If we made it here the remote processor was started by another
@@ -1562,12 +1566,6 @@ static int rproc_reset_rsc_table_on_stop(struct rproc *rproc)
 				      rproc->table_sz, GFP_KERNEL);
 	if (!rproc->cached_table)
 		return -ENOMEM;
-
-	/*
-	 * Since the remote processor is being switched off the clean table
-	 * won't be needed.  Allocated in rproc_set_rsc_table().
-	 */
-	kfree(rproc->clean_table);
 
 out:
 	/*
@@ -1696,6 +1694,7 @@ static int rproc_trigger_auto_boot(struct rproc *rproc)
 
 static int rproc_stop(struct rproc *rproc, bool crashed)
 {
+	struct resource_table *table_ptr = rproc->table_ptr;
 	struct device *dev = &rproc->dev;
 	int ret;
 
@@ -1718,8 +1717,11 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
 	ret = rproc->ops->stop(rproc);
 	if (ret) {
 		dev_err(dev, "can't stop rproc: %d\n", ret);
+		rproc->table_ptr = table_ptr;
 		return ret;
 	}
+	kfree(rproc->clean_table);
+	rproc->clean_table = NULL;
 
 	rproc_unprepare_subdevices(rproc);
 
@@ -1735,6 +1737,7 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
  */
 static int __rproc_detach(struct rproc *rproc)
 {
+	struct resource_table *table_ptr = rproc->table_ptr;
 	struct device *dev = &rproc->dev;
 	int ret;
 
@@ -1756,6 +1759,9 @@ static int __rproc_detach(struct rproc *rproc)
 	ret = rproc->ops->detach(rproc);
 	if (ret) {
 		dev_err(dev, "can't detach from rproc: %d\n", ret);
+		if (table_ptr && rproc->cached_table)
+			memcpy(table_ptr, rproc->cached_table, rproc->table_sz);
+		rproc->table_ptr = table_ptr;
 		return ret;
 	}
 
@@ -1770,11 +1776,23 @@ static int __rproc_detach(struct rproc *rproc)
 
 static int rproc_attach_recovery(struct rproc *rproc)
 {
+	struct resource_table *table_ptr = rproc->table_ptr;
+	bool had_cached_table = !!rproc->cached_table;
 	int ret;
 
 	ret = __rproc_detach(rproc);
 	if (ret)
 		return ret;
+
+	/* Keep the active vring addresses and notify IDs across re-attachment. */
+	if (table_ptr && rproc->cached_table) {
+		memcpy(table_ptr, rproc->cached_table, rproc->table_sz);
+		rproc->table_ptr = table_ptr;
+		if (!had_cached_table) {
+			kfree(rproc->cached_table);
+			rproc->cached_table = NULL;
+		}
+	}
 
 	return __rproc_attach(rproc);
 }
@@ -1863,7 +1881,7 @@ static void rproc_crash_handler_work(struct work_struct *work)
 	if (rproc->state == RPROC_CRASHED) {
 		/* handle only the first crash detected */
 		mutex_unlock(&rproc->lock);
-		return;
+		goto out;
 	}
 
 	if (rproc->state == RPROC_OFFLINE) {
@@ -1988,7 +2006,7 @@ int rproc_shutdown(struct rproc *rproc)
 	}
 
 	if (rproc->state != RPROC_RUNNING &&
-	    rproc->state != RPROC_ATTACHED) {
+	    rproc->state != RPROC_ATTACHED && rproc->state != RPROC_CRASHED) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1997,7 +2015,7 @@ int rproc_shutdown(struct rproc *rproc)
 	if (!atomic_dec_and_test(&rproc->power))
 		goto out;
 
-	ret = rproc_stop(rproc, false);
+	ret = rproc_stop(rproc, rproc->state == RPROC_CRASHED);
 	if (ret) {
 		atomic_inc(&rproc->power);
 		goto out;
@@ -2015,6 +2033,8 @@ int rproc_shutdown(struct rproc *rproc)
 	kfree(rproc->cached_table);
 	rproc->cached_table = NULL;
 	rproc->table_ptr = NULL;
+	kfree(rproc->clean_table);
+	rproc->clean_table = NULL;
 out:
 	mutex_unlock(&rproc->lock);
 	return ret;
@@ -2081,6 +2101,8 @@ int rproc_detach(struct rproc *rproc)
 	kfree(rproc->cached_table);
 	rproc->cached_table = NULL;
 	rproc->table_ptr = NULL;
+	kfree(rproc->clean_table);
+	rproc->clean_table = NULL;
 out:
 	mutex_unlock(&rproc->lock);
 	return ret;
@@ -2782,3 +2804,7 @@ static void __exit remoteproc_exit(void)
 module_exit(remoteproc_exit);
 
 MODULE_DESCRIPTION("Generic Remote Processor Framework");
+
+#if IS_ENABLED(CONFIG_REMOTEPROC_KUNIT_TEST)
+#include "remoteproc_core_test.c"
+#endif
