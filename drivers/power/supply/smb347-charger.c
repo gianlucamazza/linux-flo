@@ -1488,7 +1488,8 @@ static const struct regmap_config smb347_regmap = {
 	.max_register	= SMB347_MAX_REGISTER,
 	.volatile_reg	= smb347_volatile_reg,
 	.readable_reg	= smb347_readable_reg,
-	.cache_type	= REGCACHE_MAPLE,
+	/* Configuration RAM and commands can change on input power loss. */
+	.cache_type	= REGCACHE_NONE,
 };
 
 static const struct regulator_ops smb347_usb_vbus_regulator_ops = {
@@ -1640,3 +1641,7 @@ MODULE_AUTHOR("Bruce E. Robertson <bruce.e.robertson@intel.com>");
 MODULE_AUTHOR("Mika Westerberg <mika.westerberg@linux.intel.com>");
 MODULE_DESCRIPTION("SMB347 battery charger driver");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_CHARGER_SMB347_KUNIT_TEST)
+#include "smb347-charger-test.c"
+#endif

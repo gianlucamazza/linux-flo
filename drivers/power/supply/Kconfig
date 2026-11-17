@@ -875,6 +875,14 @@ config CHARGER_SMB347
 	  Say Y to include support for Summit Microelectronics SMB345,
 	  SMB347 or SMB358 Battery Charger.
 
+config CHARGER_SMB347_KUNIT_TEST
+	bool "Test SMB3XX register reset handling" if !KUNIT_ALL_TESTS
+	depends on KUNIT && CHARGER_SMB347=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test register reads and updates after the charger's configuration
+	  RAM is reset independently of the driver.
+
 config CHARGER_TPS65090
 	tristate "TPS65090 battery charger driver"
 	depends on MFD_TPS65090
