@@ -1843,7 +1843,7 @@ static struct clk_rcg sdc1_src = {
 			.name = "sdc1_src",
 			.parent_data = gcc_pxo_pll8,
 			.num_parents = ARRAY_SIZE(gcc_pxo_pll8),
-			.ops = &clk_rcg_ops,
+			.ops = &clk_rcg_floor_ops,
 		},
 	}
 };
@@ -1893,7 +1893,7 @@ static struct clk_rcg sdc2_src = {
 			.name = "sdc2_src",
 			.parent_data = gcc_pxo_pll8,
 			.num_parents = ARRAY_SIZE(gcc_pxo_pll8),
-			.ops = &clk_rcg_ops,
+			.ops = &clk_rcg_floor_ops,
 		},
 	}
 };
@@ -1943,7 +1943,7 @@ static struct clk_rcg sdc3_src = {
 			.name = "sdc3_src",
 			.parent_data = gcc_pxo_pll8,
 			.num_parents = ARRAY_SIZE(gcc_pxo_pll8),
-			.ops = &clk_rcg_ops,
+			.ops = &clk_rcg_floor_ops,
 		},
 	}
 };
@@ -1993,7 +1993,7 @@ static struct clk_rcg sdc4_src = {
 			.name = "sdc4_src",
 			.parent_data = gcc_pxo_pll8,
 			.num_parents = ARRAY_SIZE(gcc_pxo_pll8),
-			.ops = &clk_rcg_ops,
+			.ops = &clk_rcg_floor_ops,
 		},
 	}
 };
@@ -2043,7 +2043,7 @@ static struct clk_rcg sdc5_src = {
 			.name = "sdc5_src",
 			.parent_data = gcc_pxo_pll8,
 			.num_parents = ARRAY_SIZE(gcc_pxo_pll8),
-			.ops = &clk_rcg_ops,
+			.ops = &clk_rcg_floor_ops,
 		},
 	}
 };

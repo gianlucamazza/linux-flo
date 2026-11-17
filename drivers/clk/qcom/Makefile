@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 obj-$(CONFIG_COMMON_CLK_QCOM) += clk-qcom.o
+obj-$(CONFIG_QCOM_RCG_KUNIT_TEST) += clk-rcg-test.o
 
 clk-qcom-y += common.o
 clk-qcom-y += clk-regmap.o
