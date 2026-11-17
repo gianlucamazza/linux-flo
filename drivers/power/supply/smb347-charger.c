@@ -1018,7 +1018,7 @@ static int smb347_recover_after_inok(struct smb347_charger *smb)
 	if (source_policy)
 		mutex_lock(&smb->usb_policy_lock);
 	ret = smb347_hw_init(smb);
-	if (!ret && source_policy && !changed)
+	if (!ret && source_policy)
 		ret = smb347_update_usb_source_locked(smb);
 	if (source_policy)
 		mutex_unlock(&smb->usb_policy_lock);

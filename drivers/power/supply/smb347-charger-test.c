@@ -256,6 +256,120 @@ static void smb347_inok_restores_config_without_online_transition(struct kunit *
 	KUNIT_EXPECT_EQ(test, bus->writes[CFG_PIN], pin_writes);
 }
 
+struct smb347_test_source {
+	int online;
+	int type;
+	int current_max;
+};
+
+static int smb347_test_source_get(struct power_supply *psy,
+				  enum power_supply_property prop,
+				  union power_supply_propval *val)
+{
+	struct smb347_test_source *source = power_supply_get_drvdata(psy);
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		val->intval = source->online;
+		break;
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		val->intval = source->type;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		val->intval = source->current_max;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static void smb347_test_source_unregister(void *data)
+{
+	power_supply_unregister(data);
+}
+
+static void smb345_inok_applies_already_detected_source_on_attach(struct kunit *test)
+{
+	static const struct property_entry properties[] = {
+		PROPERTY_ENTRY_BOOL("power-supplies"),
+		{ }
+	};
+	static enum power_supply_property source_properties[] = {
+		POWER_SUPPLY_PROP_ONLINE,
+		POWER_SUPPLY_PROP_USB_TYPE,
+		POWER_SUPPLY_PROP_CURRENT_MAX,
+	};
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	static const struct power_supply_desc source_desc = {
+		.name = "smb345-inok-attach-test-source",
+		.type = POWER_SUPPLY_TYPE_USB,
+		.properties = source_properties,
+		.num_properties = ARRAY_SIZE(source_properties),
+		.get_property = smb347_test_source_get,
+		.usb_types = BIT(POWER_SUPPLY_USB_TYPE_DCP),
+	};
+	struct smb347_test_source *source;
+	struct power_supply_config source_config;
+	char **supplied_from;
+	struct power_supply usb = {
+		.desc = &smb347_usb_desc,
+		.num_supplies = 1,
+	};
+	struct smb347_charger smb = {
+		.id = SMB345,
+		.use_usb = true,
+		.irq_unsupported = true,
+		.enable_control = SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW,
+		.usb_hc_current_limit = 1200000,
+		.usb_policy_ready = true,
+		.soft_cold_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.soft_hot_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.hard_cold_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.hard_hot_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.soft_temp_limit_compensation = SMB3XX_SOFT_TEMP_COMPENSATE_DEFAULT,
+	};
+	struct power_supply *source_psy;
+	struct device *dev;
+	int ret;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	supplied_from = kunit_kcalloc(test, 1, sizeof(*supplied_from), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, supplied_from);
+	supplied_from[0] = kunit_kstrdup(test, source_desc.name, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, supplied_from[0]);
+	usb.supplied_from = supplied_from;
+	source = kunit_kzalloc(test, sizeof(*source), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, source);
+	source->online = 1;
+	source->type = POWER_SUPPLY_USB_TYPE_DCP;
+	source->current_max = 1200000;
+	source_config = (struct power_supply_config) { .drv_data = source };
+	dev = kunit_device_register(test, "smb345-inok-attach");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	ret = device_create_managed_software_node(dev, properties, NULL);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	source_psy = power_supply_register(dev, &source_desc, &source_config);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(source_psy));
+	ret = kunit_add_action_or_reset(test, smb347_test_source_unregister, source_psy);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	smb.dev = dev;
+	smb.regmap = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(smb.regmap));
+	smb.usb = &usb;
+	mutex_init(&smb.usb_policy_lock);
+	bus->regs[IRQSTAT_E] = 0;
+	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
+
+	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
+	KUNIT_EXPECT_TRUE(test, smb.usb_online);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT] &
+				CFG_CURRENT_LIMIT_USB_MASK, 4);
+	KUNIT_EXPECT_EQ(test, bus->regs[CMD_B] &
+				(CMD_B_USB_HC_MODE | CMD_B_USB_500_MODE),
+			CMD_B_USB_HC_MODE);
+}
+
 static void smb347_inok_does_not_program_disconnected_input(struct kunit *test)
 {
 	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
@@ -454,6 +568,7 @@ static struct kunit_case smb347_reset_cases[] = {
 	KUNIT_CASE(smb347_input_event_controls_charging_without_chip_irq),
 	KUNIT_CASE(smb347_input_event_read_failure_preserves_charging_state),
 	KUNIT_CASE(smb347_inok_restores_config_without_online_transition),
+	KUNIT_CASE(smb345_inok_applies_already_detected_source_on_attach),
 	KUNIT_CASE(smb347_inok_does_not_program_disconnected_input),
 	KUNIT_CASE(smb347_inok_reports_connection_when_restore_write_fails),
 	{}
