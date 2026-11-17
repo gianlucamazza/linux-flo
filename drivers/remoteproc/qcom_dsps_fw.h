@@ -34,7 +34,7 @@ static inline int dsps_validate_fw(const struct firmware *fw,
 	    ehdr->e_version != EV_CURRENT || ehdr->e_ehsize != sizeof(*ehdr) ||
 	    ehdr->e_phentsize != sizeof(*phdr) ||
 	    ehdr->e_phnum < 3 || ehdr->e_phnum > 100 ||
-	    ehdr->e_phoff < sizeof(*ehdr) || !IS_ALIGNED(ehdr->e_phoff, 4))
+	    ehdr->e_phoff != sizeof(*ehdr))
 		return -EINVAL;
 
 	header_end = (u64)ehdr->e_phoff + ehdr->e_phnum * sizeof(*phdr);

@@ -112,8 +112,31 @@ static void dsps_rejects_relocation(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, validate(&image, sizeof(image)), -EINVAL);
 }
 
+static void dsps_rejects_shifted_program_headers(struct kunit *test)
+{
+	struct dsps_test_image image;
+	struct {
+		struct elf32_hdr hdr;
+		u32 padding;
+		struct elf32_phdr phdr[4];
+		u8 hash[4];
+	} shifted;
+	struct firmware fw = { .data = (u8 *)&shifted, .size = sizeof(shifted) };
+
+	dsps_test_init(&image);
+	memset(&shifted, 0, sizeof(shifted));
+	shifted.hdr = image.hdr;
+	memcpy(shifted.phdr, image.phdr, sizeof(image.phdr));
+	shifted.hdr.e_phoff = offsetof(typeof(shifted), phdr);
+	shifted.phdr[0].p_filesz = offsetof(typeof(shifted), hash);
+	/* MDT and dump helpers require headers immediately after the ELF header. */
+	KUNIT_EXPECT_EQ(test, dsps_validate_fw(&fw, test_regions,
+					       ARRAY_SIZE(test_regions)), -EINVAL);
+}
+
 static struct kunit_case dsps_cases[] = {
 	KUNIT_CASE(dsps_valid_scatter_image),
+	KUNIT_CASE(dsps_rejects_shifted_program_headers),
 	KUNIT_CASE(dsps_invalid_header),
 	KUNIT_CASE(dsps_invalid_hash_metadata),
 	KUNIT_CASE(dsps_invalid_load_ranges),
