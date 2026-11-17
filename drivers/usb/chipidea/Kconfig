@@ -43,9 +43,19 @@ config USB_CHIPIDEA_MSM
 	tristate "Enable MSM hsusb glue driver" if EXPERT
 	default USB_CHIPIDEA
 
+config USB_CHIPIDEA_MSM_BC12
+	bool "Qualcomm APQ8064 USB source detection" if EXPERT || KUNIT
+	depends on USB_CHIPIDEA_MSM=y && POWER_SUPPLY=y
+	default y if ARCH_QCOM
+	help
+	  Detect SDP, CDP and DCP sources with the APQ8064 28 nm USB PHY
+	  before the USB gadget joins the bus. Report the result through
+	  the power supply subsystem so a charger can set its input current
+	  according to the source. Other Qualcomm PHYs are unaffected.
+
 config USB_CHIPIDEA_MSM_BC12_KUNIT_TEST
 	bool "Test MSM USB source detection" if !KUNIT_ALL_TESTS
-	depends on KUNIT && USB_CHIPIDEA_MSM=y
+	depends on KUNIT && USB_CHIPIDEA_MSM_BC12
 	default KUNIT_ALL_TESTS
 
 config USB_CHIPIDEA_NPCM

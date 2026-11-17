@@ -13,7 +13,8 @@ ci_hdrc-$(CONFIG_USB_OTG_FSM)		+= otg_fsm.o
 
 obj-$(CONFIG_USB_CHIPIDEA_GENERIC)	+= ci_hdrc_usb2.o
 obj-$(CONFIG_USB_CHIPIDEA_MSM)		+= ci_hdrc_msm.o
-ci_hdrc_msm-y				:= ci_hdrc_msm_glue.o ci_hdrc_msm_bc12.o
+ci_hdrc_msm-y				:= ci_hdrc_msm_glue.o
+ci_hdrc_msm-$(CONFIG_USB_CHIPIDEA_MSM_BC12) += ci_hdrc_msm_bc12.o
 obj-$(CONFIG_USB_CHIPIDEA_NPCM)		+= ci_hdrc_npcm.o
 obj-$(CONFIG_USB_CHIPIDEA_PCI)		+= ci_hdrc_pci.o
 obj-$(CONFIG_USB_CHIPIDEA_IMX)		+= usbmisc_imx.o ci_hdrc_imx.o
