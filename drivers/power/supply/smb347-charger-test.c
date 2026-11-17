@@ -4,8 +4,11 @@
 
 struct smb347_test_bus {
 	u8 regs[SMB347_MAX_REGISTER + 1];
+	unsigned int writes[SMB347_MAX_REGISTER + 1];
 	bool fail_read;
 	unsigned int fail_reg;
+	bool fail_write;
+	unsigned int fail_write_reg;
 };
 
 static int smb347_test_read(void *context, unsigned int reg, unsigned int *val)
@@ -22,7 +25,10 @@ static int smb347_test_write(void *context, unsigned int reg, unsigned int val)
 {
 	struct smb347_test_bus *bus = context;
 
+	if (bus->fail_write && reg == bus->fail_write_reg)
+		return -EIO;
 	bus->regs[reg] = val;
+	bus->writes[reg]++;
 	return 0;
 }
 
@@ -197,6 +203,109 @@ static void smb347_input_event_read_failure_preserves_charging_state(struct kuni
 	KUNIT_EXPECT_EQ(test, bus->regs[CMD_A] & CMD_A_CHG_ENABLED, 0);
 }
 
+static void smb347_inok_restores_config_without_online_transition(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = {
+		.id = SMB345,
+		.use_usb = true,
+		.usb_online = true,
+		.irq_unsupported = true,
+		.enable_control = SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW,
+		.usb_hc_current_limit = 1500000,
+		.soft_cold_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.soft_hot_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.hard_cold_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.hard_hot_temp_limit = SMB3XX_TEMP_USE_DEFAULT,
+		.soft_temp_limit_compensation = SMB3XX_SOFT_TEMP_COMPENSATE_DEFAULT,
+	};
+	struct device *dev;
+	struct regmap *map;
+	unsigned int current_writes, pin_writes;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	dev = kunit_device_register(test, "smb347-inok-reset");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.dev = dev;
+	smb.regmap = map;
+	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
+	bus->regs[IRQSTAT_E] = 0;
+
+	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT] & CFG_CURRENT_LIMIT_USB_MASK,
+			4);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_PIN] & CFG_PIN_EN_CTRL_MASK,
+			CFG_PIN_EN_CTRL_ACTIVE_LOW);
+	current_writes = bus->writes[CFG_CURRENT_LIMIT];
+	pin_writes = bus->writes[CFG_PIN];
+
+	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
+	KUNIT_EXPECT_EQ(test, bus->writes[CFG_CURRENT_LIMIT], current_writes);
+	KUNIT_EXPECT_EQ(test, bus->writes[CFG_PIN], pin_writes);
+}
+
+static void smb347_inok_does_not_program_disconnected_input(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = {
+		.id = SMB345,
+		.use_usb = true,
+		.usb_online = true,
+		.irq_unsupported = true,
+		.enable_control = SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW,
+		.usb_hc_current_limit = 1500000,
+	};
+	struct device *dev;
+	struct regmap *map;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	dev = kunit_device_register(test, "smb347-inok-offline");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.dev = dev;
+	smb.regmap = map;
+	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
+	bus->regs[IRQSTAT_E] = IRQSTAT_E_USBIN_UV_STAT;
+
+	KUNIT_ASSERT_EQ(test, smb347_recover_after_inok(&smb), 1);
+	KUNIT_EXPECT_FALSE(test, smb.usb_online);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT], 0x41);
+	KUNIT_EXPECT_EQ(test, bus->writes[CFG_CURRENT_LIMIT], 0U);
+}
+
+static void smb347_inok_reports_connection_when_restore_write_fails(struct kunit *test)
+{
+	struct smb347_test_bus *bus = kunit_kzalloc(test, sizeof(*bus), GFP_KERNEL);
+	struct smb347_charger smb = {
+		.id = SMB345,
+		.use_usb = true,
+		.irq_unsupported = true,
+		.enable_control = SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW,
+		.usb_hc_current_limit = 1500000,
+	};
+	struct device *dev;
+	struct regmap *map;
+
+	KUNIT_ASSERT_NOT_NULL(test, bus);
+	dev = kunit_device_register(test, "smb347-inok-write-error");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	map = smb347_test_regmap(test, bus);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(map));
+	smb.dev = dev;
+	smb.regmap = map;
+	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
+	bus->regs[IRQSTAT_E] = 0;
+	bus->fail_write = true;
+	bus->fail_write_reg = CFG_CURRENT_LIMIT;
+
+	KUNIT_EXPECT_EQ(test, smb347_recover_after_inok(&smb), 1);
+	KUNIT_EXPECT_TRUE(test, smb.usb_online);
+	KUNIT_EXPECT_EQ(test, bus->regs[CFG_CURRENT_LIMIT], 0x41);
+}
+
 static struct kunit_case smb347_reset_cases[] = {
 	KUNIT_CASE(smb347_config_read_tracks_chip_reset),
 	KUNIT_CASE(smb347_command_update_uses_chip_state),
@@ -204,6 +313,9 @@ static struct kunit_case smb347_reset_cases[] = {
 	KUNIT_CASE(smb347_usb_type_is_only_advertised_for_usb),
 	KUNIT_CASE(smb347_input_event_controls_charging_without_chip_irq),
 	KUNIT_CASE(smb347_input_event_read_failure_preserves_charging_state),
+	KUNIT_CASE(smb347_inok_restores_config_without_online_transition),
+	KUNIT_CASE(smb347_inok_does_not_program_disconnected_input),
+	KUNIT_CASE(smb347_inok_reports_connection_when_restore_write_fails),
 	{}
 };
 

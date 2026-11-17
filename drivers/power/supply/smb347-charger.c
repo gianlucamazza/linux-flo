@@ -447,6 +447,8 @@ static void smb347_notify_input_change(struct smb347_charger *smb)
 		power_supply_changed(smb->usb);
 }
 
+static int smb347_irq_set(struct smb347_charger *smb, bool enable);
+
 static int smb347_set_charge_current(struct smb347_charger *smb)
 {
 	unsigned int id = smb->id;
@@ -823,6 +825,46 @@ fail:
 	return ret;
 }
 
+static int smb347_recover_after_inok(struct smb347_charger *smb)
+{
+	int changed, ret, chip_irq = -1;
+
+	changed = smb347_update_ps_status(smb);
+	if (changed < 0)
+		return changed;
+
+	if (!smb347_is_ps_online(smb)) {
+		ret = smb347_start_stop_charging(smb);
+		if (ret < 0)
+			dev_warn(smb->dev, "failed to stop charging: %d\n", ret);
+		return changed;
+	}
+
+	/* The charger's configuration RAM may have reset while VBUS was absent. */
+	if (!smb->irq_unsupported) {
+		chip_irq = to_i2c_client(smb->dev)->irq;
+		disable_irq(chip_irq);
+	}
+
+	ret = smb347_hw_init(smb);
+	if (ret < 0)
+		dev_warn(smb->dev, "failed to restore charger configuration: %d\n",
+			 ret);
+	else if (chip_irq >= 0) {
+		ret = smb347_irq_set(smb, true);
+		if (ret < 0)
+			dev_warn(smb->dev, "failed to restore charger IRQs: %d\n",
+				 ret);
+	}
+
+	if (chip_irq >= 0)
+		enable_irq(chip_irq);
+	if (ret < 0)
+		return changed > 0 ? changed : ret;
+
+	return 1;
+}
+
 static irqreturn_t smb347_interrupt(int irq, void *data)
 {
 	struct smb347_charger *smb = data;
@@ -925,7 +967,7 @@ static irqreturn_t smb347_inok_interrupt(int irq, void *data)
 
 	/* INOK is a separate pin and does not set the charger's IRQSTAT bits. */
 	usleep_range(25000, 35000);
-	ret = smb347_handle_input_change(smb);
+	ret = smb347_recover_after_inok(smb);
 	if (ret > 0)
 		smb347_notify_input_change(smb);
 	else if (ret < 0)
