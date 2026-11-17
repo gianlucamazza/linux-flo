@@ -1260,8 +1260,11 @@ static int dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
 		ret = dsi_wait4video_done(msm_host);
 		if (ret)
 			return ret;
-		/* delay 4 ms to skip BLLP */
-		usleep_range(2000, 4000);
+		/* V2 uses MDP frame completion; arm the command before the
+		 * next active interval rather than sleeping through the blank.
+		 */
+		if (msm_host->cfg_hnd->major != MSM_DSI_VER_MAJOR_V2)
+			usleep_range(2000, 4000);
 	}
 	return 0;
 }
