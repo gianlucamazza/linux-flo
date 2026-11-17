@@ -149,10 +149,7 @@
 		reg = <0x55>;
 	};
 
-	/*
-	 * Battery charger fed from the micro-USB connector. Current and
-	 * voltage limits are left at the values programmed in the chip.
-	 */
+	/* Battery charger fed from the micro-USB connector. */
 	charger@6a {
 		compatible = "summit,smb345";
 		reg = <0x6a>;
@@ -160,8 +157,8 @@
 		summit,enable-charge-control = <SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW>;
 		summit,inok-polarity = <SMB3XX_SYSOK_INOK_ACTIVE_LOW>;
 		summit,enable-usb-charging;
-		/* DCP/CDP: the bootloader default of 500 mA cannot power the tablet */
-		summit,usb-current-limit-microamp = <1500000>;
+		/* Keep an unclassified USB source within the conservative limit. */
+		summit,usb-current-limit-microamp = <500000>;
 
 		monitored-battery = <&battery>;
 	};
