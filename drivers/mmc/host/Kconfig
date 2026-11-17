@@ -33,6 +33,20 @@ config MMC_ARMMMCI
 
 	  If unsure, say N.
 
+config MMC_ARMMMCI_KUNIT_TEST
+	bool "KUnit tests for MMCI DMA request handover" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && MMC=y && DMADEVICES && HAS_IOMEM
+	select ARM_AMBA
+	select MMC_ARMMMCI
+	select DMA_ENGINE
+	default KUNIT_ALL_TESTS
+	help
+	  Enable KUnit tests for the ARM PrimeCell MMCI DMA request
+	  handover. They check that a synchronous MMC command, such as an
+	  EXT_CSD read issued for BKOPS, cannot consume a DMA descriptor
+	  that was already pre-mapped for a later asynchronous block
+	  request. Say N unless you are developing the MMCI host driver.
+
 config MMC_QCOM_DML
 	bool "Qualcomm Data Mover for SD Card Controller"
 	depends on MMC_ARMMMCI && QCOM_BAM_DMA
