@@ -20,6 +20,8 @@
 #endif
 
 #include "ci.h"
+#include "bits.h"
+#include "otg.h"
 #if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
 #include "ci_hdrc_msm_bc12.h"
 #endif
@@ -98,36 +100,16 @@ static void ci_msm_source_update(struct ci_hdrc_msm *msm_ci, bool online,
 				 enum ci_msm_bc12_type type)
 {
 	unsigned long flags;
+	bool changed;
 
 	if (!msm_ci->source_psy)
 		return;
 
 	spin_lock_irqsave(&msm_ci->source_lock, flags);
-	msm_ci->source.online = online;
-	msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
-	msm_ci->source.current_max = online ? 100000 : 0;
-	if (online) {
-		switch (type) {
-		case CI_MSM_BC12_SDP:
-			msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_SDP;
-			break;
-		case CI_MSM_BC12_CDP:
-			msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_CDP;
-			msm_ci->source.current_max = 1200000;
-			break;
-		case CI_MSM_BC12_DCP:
-			msm_ci->source.usb_type = POWER_SUPPLY_USB_TYPE_DCP;
-			msm_ci->source.current_max = 1200000;
-			break;
-		case CI_MSM_BC12_PROPRIETARY:
-			msm_ci->source.current_max = 1200000;
-			break;
-		default:
-			break;
-		}
-	}
+	changed = ci_msm_bc12_source_complete(&msm_ci->source, online, type);
 	spin_unlock_irqrestore(&msm_ci->source_lock, flags);
-	power_supply_changed(msm_ci->source_psy);
+	if (changed)
+		power_supply_changed(msm_ci->source_psy);
 }
 
 static void ci_msm_source_stop(struct ci_hdrc_msm *msm_ci,
@@ -214,7 +196,9 @@ static void ci_msm_source_detect(struct ci_hdrc_msm *msm_ci,
 	ret = ci_msm_bc12_detect(&io, &type);
 	if (ret)
 		dev_warn(ci->dev, "USB source detection failed: %d\n", ret);
-	ci_msm_source_update(msm_ci, true, type);
+	/* VBUS may have disappeared during the PHY's detection delays. */
+	ci_msm_source_update(msm_ci, ci->vbus_active &&
+			     !!hw_read_otgsc(ci, OTGSC_BSV), type);
 }
 
 static void ci_msm_source_detect_unbound(struct ci_hdrc_msm *msm_ci,

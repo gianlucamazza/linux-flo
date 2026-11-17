@@ -209,12 +209,37 @@ static void bc12_test_stop_clears_disconnected_source(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, source.current_max, 0);
 }
 
+static void bc12_test_disconnected_during_detection(struct kunit *test)
+{
+	struct ci_msm_bc12_source_state source = {
+		.online = true,
+		.usb_type = POWER_SUPPLY_USB_TYPE_DCP,
+		.current_max = 1200000,
+	};
+
+	KUNIT_EXPECT_TRUE(test, ci_msm_bc12_source_complete(&source, false,
+						    CI_MSM_BC12_DCP));
+	KUNIT_EXPECT_FALSE(test, source.online);
+	KUNIT_EXPECT_EQ(test, source.usb_type, POWER_SUPPLY_USB_TYPE_UNKNOWN);
+	KUNIT_EXPECT_EQ(test, source.current_max, 0);
+
+	KUNIT_EXPECT_TRUE(test, ci_msm_bc12_source_complete(&source, true,
+						    CI_MSM_BC12_UNKNOWN));
+	KUNIT_EXPECT_TRUE(test, source.online);
+	KUNIT_EXPECT_EQ(test, source.current_max, 100000);
+	KUNIT_EXPECT_TRUE(test, ci_msm_bc12_source_complete(&source, true,
+						    CI_MSM_BC12_DCP));
+	KUNIT_EXPECT_EQ(test, source.usb_type, POWER_SUPPLY_USB_TYPE_DCP);
+	KUNIT_EXPECT_EQ(test, source.current_max, 1200000);
+}
+
 static struct kunit_case bc12_test_cases[] = {
 	KUNIT_CASE(bc12_test_classification),
 	KUNIT_CASE(bc12_test_error_restores_phy),
 	KUNIT_CASE(bc12_test_rebind_after_phy_reset),
 	KUNIT_CASE(bc12_test_gadget_stop_keeps_live_source),
 	KUNIT_CASE(bc12_test_stop_clears_disconnected_source),
+	KUNIT_CASE(bc12_test_disconnected_during_detection),
 	{}
 };
 

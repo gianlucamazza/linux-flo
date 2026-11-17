@@ -13,6 +13,45 @@
 #define SNPS_ALT_INT_LATCH_CLR	0x92
 #define SNPS_ALT_INT_EN_CLR	0x95
 
+bool ci_msm_bc12_source_complete(struct ci_msm_bc12_source_state *source,
+				  bool vbus_active,
+				  enum ci_msm_bc12_type type)
+{
+	enum power_supply_usb_type usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	int current_max = 0;
+	bool changed;
+
+	if (vbus_active) {
+		current_max = 100000;
+		switch (type) {
+		case CI_MSM_BC12_SDP:
+			usb_type = POWER_SUPPLY_USB_TYPE_SDP;
+			break;
+		case CI_MSM_BC12_CDP:
+			usb_type = POWER_SUPPLY_USB_TYPE_CDP;
+			current_max = 1200000;
+			break;
+		case CI_MSM_BC12_DCP:
+			usb_type = POWER_SUPPLY_USB_TYPE_DCP;
+			current_max = 1200000;
+			break;
+		case CI_MSM_BC12_PROPRIETARY:
+			current_max = 1200000;
+			break;
+		default:
+			break;
+		}
+	}
+
+	changed = source->online != vbus_active ||
+		  source->usb_type != usb_type ||
+		  source->current_max != current_max;
+	source->online = vbus_active;
+	source->usb_type = usb_type;
+	source->current_max = current_max;
+	return changed;
+}
+
 bool ci_msm_bc12_source_stop(struct ci_msm_bc12_source_state *source,
 			     bool vbus_active, bool gadget_role)
 {
