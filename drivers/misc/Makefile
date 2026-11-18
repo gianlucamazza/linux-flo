@@ -3,6 +3,9 @@
 # Makefile for misc devices that really don't fit anywhere else.
 #
 
+obj-$(CONFIG_FLO_TABLA_DISCOVERY) += flo_tabla_discovery.o
+obj-$(CONFIG_FLO_TABLA_DISCOVERY_TEST) += flo_tabla_discovery_test.o
+
 obj-$(CONFIG_IBM_ASM)		+= ibmasm/
 obj-$(CONFIG_IBMVMC)		+= ibmvmc.o
 obj-$(CONFIG_AD525X_DPOT)	+= ad525x_dpot.o
