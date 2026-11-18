@@ -147,11 +147,11 @@
 		summit,enable-charge-control = <SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW>;
 		summit,inok-polarity = <SMB3XX_SYSOK_INOK_ACTIVE_LOW>;
 		summit,enable-usb-charging;
+		summit,usb-source;
 		/* Device cap; the USB source determines the operating limit. */
 		summit,usb-current-limit-microamp = <1200000>;
 
 		monitored-battery = <&battery>;
-		power-supplies = <&usb1>;
 	};
 };
 
@@ -407,6 +407,7 @@
 &usb1 {
 	dr_mode = "otg";
 	extcon = <&charger>;
+	qcom,bc12-supplied-to = "smb347-usb";
 	pinctrl-names = "default";
 	pinctrl-0 = <&usb_id_pin>;
 	status = "okay";
