@@ -11,6 +11,7 @@ struct bc12_test_state {
 	bool proprietary;
 	bool failed;
 	bool primary_cleared;
+	bool primary_settled;
 	bool phy_suspended;
 	unsigned int wait_total_ms;
 };
@@ -46,12 +47,16 @@ static int bc12_test_write(void *context, u8 address, u8 value)
 	    !(value & ULPI_FUNC_CTRL_SUSPENDM))
 		state->phy_suspended = true;
 
-	if (address == 0x86 && value == 0x3f)
+	if (address == 0x86 && value == 0x3f) {
 		state->primary_cleared = false;
-	if (address == 0x86 && value == 0x03)
+		state->primary_settled = false;
+	}
+	if (address == 0x86 && value == 0x03) {
 		state->primary_cleared = true;
-	/* The PHY must stay active between primary and secondary detection. */
-	if (address == 0x85 && value == 0x08 && state->primary_cleared)
+		state->primary_settled = false;
+	}
+	/* Secondary detection must start after the primary source settles. */
+	if (address == 0x85 && value == 0x08 && !state->primary_settled)
 		return -ETIMEDOUT;
 
 	if (address == 0x85 && value == 0x10)
@@ -74,13 +79,16 @@ static void bc12_test_wait(void *context, unsigned int milliseconds)
 	struct bc12_test_state *state = context;
 
 	state->wait_total_ms += milliseconds;
+	if (state->primary_cleared && milliseconds >= 20)
+		state->primary_settled = true;
 }
 
 static int bc12_test_line_state(void *context)
 {
 	struct bc12_test_state *state = context;
 
-	return state->proprietary ? 1 : 0;
+	/* Active primary bias can look like a proprietary D+ line. */
+	return state->proprietary || !state->primary_settled;
 }
 
 static void bc12_test_classification(struct kunit *test)
