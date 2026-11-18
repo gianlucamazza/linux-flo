@@ -411,7 +411,12 @@ static int wcn36xx_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 					return -EIO;
 				}
 			}
-			wcn36xx_smd_start_scan(wcn, ch);
+			ret = wcn36xx_smd_start_scan(wcn, ch);
+			if (ret) {
+				/* Let mac80211 skip a channel rejected by firmware. */
+				mutex_unlock(&wcn->conf_mutex);
+				return -EIO;
+			}
 		} else {
 			wcn36xx_change_opchannel(wcn, ch);
 		}
