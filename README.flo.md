@@ -8,6 +8,10 @@ upstream Linux, GPL-2.0 (see `COPYING`).
 Userland, build wrappers and notes:
 [nexus7-flo-linux](https://github.com/gianlucamazza/nexus7-flo-linux).
 
+Hardware status per component:
+[HARDWARE.md](https://github.com/gianlucamazza/nexus7-flo-linux/blob/main/docs/HARDWARE.md);
+roadmap: [ROADMAP.md](https://github.com/gianlucamazza/nexus7-flo-linux/blob/main/docs/ROADMAP.md).
+
 ## Branches
 
 - `flo/main` – the series currently booted on the test tablet (28 patches)
