@@ -18,7 +18,6 @@
 #define FLO_TABLA_MCLK_HZ 12288000
 
 struct flo_tabla_discovery {
-	struct device *dev;
 	struct device *controller;
 	struct regulator *s4;
 	struct regulator *l25;
@@ -60,57 +59,56 @@ static int flo_tabla_apply(void *data, enum flo_tabla_action action)
 		return regulator_disable(td->s4);
 	case FLO_TABLA_CONTROLLER_PUT:
 		pm_runtime_mark_last_busy(td->controller);
-		pm_runtime_put_autosuspend(td->controller);
-		return 0;
+		return pm_runtime_put_autosuspend(td->controller);
 	}
 	return -EINVAL;
 }
 
 static int flo_tabla_power_off(struct flo_tabla_power *p)
 {
-	int ret, first_error = 0;
+	int ret;
 
-	if (!p->controller_on && !p->s4_on && !p->l25_on && !p->mclk_on)
+	if (!p->controller_on && !p->s4_on && !p->l25_on && !p->mclk_on &&
+	    p->reset_asserted)
 		return 0;
 
-	ret = p->apply(p->ctx, FLO_TABLA_RESET_ASSERT);
-	if (ret)
-		first_error = ret;
+	p->enabled = false;
+	if (!p->reset_asserted) {
+		ret = p->apply(p->ctx, FLO_TABLA_RESET_ASSERT);
+		if (ret)
+			return ret;
+		p->reset_asserted = true;
+	}
 	if (p->mclk_on) {
 		ret = p->apply(p->ctx, FLO_TABLA_MCLK_DISABLE);
-		if (!ret)
-			p->mclk_on = false;
-		else if (!first_error)
-			first_error = ret;
+		if (ret)
+			return ret;
+		p->mclk_on = false;
 	}
 	if (p->l25_on) {
 		ret = p->apply(p->ctx, FLO_TABLA_L25_DISABLE);
-		if (!ret)
-			p->l25_on = false;
-		else if (!first_error)
-			first_error = ret;
+		if (ret)
+			return ret;
+		p->l25_on = false;
 	}
 	if (p->s4_on) {
 		ret = p->apply(p->ctx, FLO_TABLA_S4_DISABLE);
-		if (!ret)
-			p->s4_on = false;
-		else if (!first_error)
-			first_error = ret;
+		if (ret)
+			return ret;
+		p->s4_on = false;
 	}
 	if (p->controller_on) {
 		ret = p->apply(p->ctx, FLO_TABLA_CONTROLLER_PUT);
-		if (!ret)
-			p->controller_on = false;
-		else if (!first_error)
-			first_error = ret;
+		/* The reference is dropped even if autosuspend scheduling fails. */
+		p->controller_on = false;
+		return ret;
 	}
-	p->enabled = false;
-	return first_error;
+	return 0;
 }
 
 int flo_tabla_power_set(struct flo_tabla_power *p, bool enable)
 {
-	int ret;
+	int ret, cleanup_ret;
 
 	if (!enable)
 		return flo_tabla_power_off(p);
@@ -134,12 +132,14 @@ int flo_tabla_power_set(struct flo_tabla_power *p, bool enable)
 	ret = p->apply(p->ctx, FLO_TABLA_RESET_ASSERT);
 	if (ret)
 		goto unwind;
+	p->reset_asserted = true;
 	ret = p->apply(p->ctx, FLO_TABLA_WAIT_RESET);
 	if (ret)
 		goto unwind;
 	ret = p->apply(p->ctx, FLO_TABLA_RESET_DEASSERT);
 	if (ret)
 		goto unwind;
+	p->reset_asserted = false;
 	ret = p->apply(p->ctx, FLO_TABLA_WAIT_BOOT);
 	if (ret)
 		goto unwind;
@@ -154,7 +154,9 @@ int flo_tabla_power_set(struct flo_tabla_power *p, bool enable)
 	return 0;
 
 unwind:
-	flo_tabla_power_off(p);
+	cleanup_ret = flo_tabla_power_off(p);
+	if (cleanup_ret)
+		return cleanup_ret;
 	return ret;
 }
 EXPORT_SYMBOL_GPL(flo_tabla_power_set);
@@ -204,6 +206,11 @@ static int flo_tabla_probe(struct platform_device *pdev)
 	of_node_put(node);
 	if (!controller)
 		return -EPROBE_DEFER;
+	if (!device_link_add(dev, &controller->dev,
+			     DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		ret = -ENOMEM;
+		goto put_controller;
+	}
 	if (!device_is_bound(&controller->dev)) {
 		ret = -EPROBE_DEFER;
 		goto put_controller;
@@ -214,7 +221,6 @@ static int flo_tabla_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto put_controller;
 	}
-	td->dev = dev;
 	td->controller = &controller->dev;
 	td->s4 = devm_regulator_get(dev, "vdd-1p8");
 	if (IS_ERR(td->s4)) {
@@ -236,13 +242,10 @@ static int flo_tabla_probe(struct platform_device *pdev)
 		ret = dev_err_probe(dev, PTR_ERR(td->mclk), "codec MCLK\n");
 		goto put_controller;
 	}
-	if (!device_link_add(dev, td->controller, DL_FLAG_AUTOREMOVE_CONSUMER)) {
-		ret = -ENOMEM;
-		goto put_controller;
-	}
 	mutex_init(&td->lock);
 	td->power.apply = flo_tabla_apply;
 	td->power.ctx = td;
+	td->power.reset_asserted = true;
 	platform_set_drvdata(pdev, td);
 	ret = device_create_file(dev, &dev_attr_enabled);
 	if (ret)
@@ -257,11 +260,14 @@ put_controller:
 static void flo_tabla_remove(struct platform_device *pdev)
 {
 	struct flo_tabla_discovery *td = platform_get_drvdata(pdev);
+	int ret;
 
 	device_remove_file(&pdev->dev, &dev_attr_enabled);
 	mutex_lock(&td->lock);
-	flo_tabla_power_set(&td->power, false);
+	ret = flo_tabla_power_set(&td->power, false);
 	mutex_unlock(&td->lock);
+	if (ret)
+		dev_err(&pdev->dev, "codec shutdown failed: %d\n", ret);
 }
 
 static int flo_tabla_suspend(struct device *dev)
@@ -288,6 +294,7 @@ static struct platform_driver flo_tabla_driver = {
 	.remove = flo_tabla_remove,
 	.driver = {
 		.name = "flo-tabla-discovery",
+		.suppress_bind_attrs = true,
 		.of_match_table = flo_tabla_of_match,
 		.pm = pm_sleep_ptr(&flo_tabla_pm_ops),
 	},
