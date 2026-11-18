@@ -447,6 +447,13 @@
 	};
 };
 
+/* The flo WCNSS 1.4.1.2 firmware rejects channel 144 scan requests. */
+&wcnss_wifi {
+	ieee80211-freq-limit = <2400000 2500000>,
+			       <5150000 5710000>,
+			       <5730000 5900000>;
+};
+
 /* The tablet idles around 60 C; start throttling well above that. */
 &cpu_alert0 {
 	temperature = <85000>;

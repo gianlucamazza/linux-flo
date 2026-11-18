@@ -1839,7 +1839,7 @@
 						compatible = "qcom,wcnss-bt";
 					};
 
-					wifi {
+					wcnss_wifi: wifi {
 						compatible = "qcom,wcnss-wlan";
 
 						interrupts = <GIC_SPI 203 IRQ_TYPE_LEVEL_HIGH>,
