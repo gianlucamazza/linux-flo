@@ -34,6 +34,14 @@ properties:
 
   power-supplies: true
 
+  summit,usb-source:
+    type: boolean
+    description: |
+      The USB controller reports its BC1.2 source type and current limit to
+      the charger power supply. The controller names this charger in its
+      qcom,bc12-supplied-to property, avoiding a probe dependency cycle when
+      the controller also consumes the charger's VBUS extcon signal.
+
   summit,enable-usb-charging:
     type: boolean
     description: Enable charging through USB.

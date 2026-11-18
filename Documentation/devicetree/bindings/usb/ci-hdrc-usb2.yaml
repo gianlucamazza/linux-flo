@@ -76,6 +76,13 @@ properties:
     type: boolean
     deprecated: true
 
+  qcom,bc12-supplied-to:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: |
+      Name of the charger power supply that consumes the Qualcomm PHY BC1.2
+      source classification. The USB source registers this relationship with
+      the power supply core after it probes.
+
   ulpi:
     type: object
     additionalProperties: false
