@@ -58,6 +58,7 @@ struct ci_hdrc_msm {
 #if IS_ENABLED(CONFIG_USB_CHIPIDEA_MSM_BC12)
 	struct power_supply *source_psy;
 	struct power_supply_desc source_desc;
+	char *source_supplied_to;
 	/* Protect the source properties read from power_supply callbacks. */
 	spinlock_t source_lock;
 	struct ci_msm_bc12_source_state source;
@@ -301,6 +302,16 @@ static int ci_msm_source_register(struct platform_device *pdev,
 		BIT(POWER_SUPPLY_USB_TYPE_SDP) |
 		BIT(POWER_SUPPLY_USB_TYPE_CDP) |
 		BIT(POWER_SUPPLY_USB_TYPE_DCP);
+
+	if (!device_property_read_string(&pdev->dev, "qcom,bc12-supplied-to",
+					 &name)) {
+		msm_ci->source_supplied_to = devm_kstrdup(&pdev->dev, name,
+							 GFP_KERNEL);
+		if (!msm_ci->source_supplied_to)
+			return -ENOMEM;
+		config.supplied_to = &msm_ci->source_supplied_to;
+		config.num_supplicants = 1;
+	}
 
 	psy = devm_power_supply_register(&pdev->dev, &msm_ci->source_desc,
 					 &config);

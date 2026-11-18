@@ -286,7 +286,7 @@ smb347_usb_source_policy(enum power_supply_usb_type type,
 static bool smb347_has_usb_source(struct smb347_charger *smb)
 {
 	return smb->id == SMB345 && smb->use_usb &&
-	       device_property_present(smb->dev, "power-supplies");
+	       device_property_present(smb->dev, "summit,usb-source");
 }
 
 /* Fast charge current in uA */
