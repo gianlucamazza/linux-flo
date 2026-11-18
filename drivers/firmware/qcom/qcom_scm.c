@@ -965,14 +965,25 @@ int qcom_scm_pas_auth_and_reset(u32 pas_id)
 	struct qcom_scm_res res;
 
 	ret = qcom_scm_clk_enable();
-	if (ret)
+	if (ret) {
+		dev_err(__scm->dev, "PAS %u: SCM clock enable failed: %d\n",
+			pas_id, ret);
 		return ret;
+	}
 
 	ret = qcom_scm_bw_enable();
+	if (ret)
+		dev_err(__scm->dev, "PAS %u: SCM bandwidth vote failed: %d\n",
+			pas_id, ret);
 	if (ret)
 		goto disable_clk;
 
 	ret = qcom_scm_call(__scm->dev, &desc, &res);
+	if (ret)
+		dev_err(__scm->dev, "PAS %u: SCM call failed: %d\n", pas_id, ret);
+	else if (res.result[0])
+		dev_err(__scm->dev, "PAS %u: firmware status: 0x%llx\n",
+			pas_id, res.result[0]);
 	qcom_scm_bw_disable();
 
 disable_clk:
