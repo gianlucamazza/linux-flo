@@ -202,7 +202,7 @@ static int calibrate_8960(struct tsens_priv *priv)
 	return 0;
 }
 
-static struct reg_field tsens_8960_regfields[MAX_REGFIELDS] = {
+static const struct reg_field tsens_8960_regfields[MAX_REGFIELDS] = {
 	/* ----- SROT ------ */
 	/* No VERSION information */
 
@@ -269,10 +269,18 @@ static struct reg_field tsens_8960_regfields[MAX_REGFIELDS] = {
 static int init_8960(struct tsens_priv *priv)
 {
 	if (of_machine_is_compatible("qcom,apq8064")) {
-		tsens_8960_regfields[LOW_INT_CLEAR_0] =
-			(struct reg_field)REG_FIELD(STATUS_CNTL_ADDR_8064, 1, 1);
-		tsens_8960_regfields[UP_INT_CLEAR_0] =
-			(struct reg_field)REG_FIELD(STATUS_CNTL_ADDR_8064, 2, 2);
+		struct reg_field * const fields =
+			devm_kmemdup(priv->dev, tsens_8960_regfields,
+				     sizeof(tsens_8960_regfields), GFP_KERNEL);
+
+		if (!fields)
+			return -ENOMEM;
+
+		fields[LOW_INT_CLEAR_0] = (const struct reg_field)
+			REG_FIELD(STATUS_CNTL_ADDR_8064, 1, 1);
+		fields[UP_INT_CLEAR_0] = (const struct reg_field)
+			REG_FIELD(STATUS_CNTL_ADDR_8064, 2, 2);
+		priv->fields = fields;
 	}
 
 	return init_common(priv);
