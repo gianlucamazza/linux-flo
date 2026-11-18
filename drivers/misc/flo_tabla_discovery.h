@@ -28,6 +28,7 @@ struct flo_tabla_power {
 	bool s4_on;
 	bool l25_on;
 	bool mclk_on;
+	bool reset_asserted;
 };
 
 int flo_tabla_power_set(struct flo_tabla_power *power, bool enable);
