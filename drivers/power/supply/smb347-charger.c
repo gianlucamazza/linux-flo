@@ -10,6 +10,7 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/extcon-provider.h>
 #include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -213,6 +214,7 @@ struct smb347_charger {
 	struct regmap		*regmap;
 	struct power_supply	*mains;
 	struct power_supply	*usb;
+	struct extcon_dev	*vbus_edev;
 	struct regulator_dev	*usb_rdev;
 	unsigned int		id;
 	bool			mains_online;
@@ -487,6 +489,14 @@ static int smb347_handle_input_change(struct smb347_charger *smb)
 
 static void smb347_notify_input_change(struct smb347_charger *smb)
 {
+	int ret;
+
+	if (smb->vbus_edev) {
+		ret = extcon_set_state_sync(smb->vbus_edev, EXTCON_USB,
+					    smb->usb_online);
+		if (ret < 0)
+			dev_warn(smb->dev, "failed to report USB VBUS: %d\n", ret);
+	}
 	if (smb->use_mains)
 		power_supply_changed(smb->mains);
 	if (smb->use_usb)
@@ -1176,6 +1186,27 @@ static int smb347_inok_irq_init(struct smb347_charger *smb)
 
 	smb->inok_irq = irq;
 	return 0;
+}
+
+static int smb347_vbus_extcon_init(struct smb347_charger *smb)
+{
+	static const unsigned int cables[] = { EXTCON_USB, EXTCON_NONE };
+	struct extcon_dev *edev;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_EXTCON) || !smb->use_usb ||
+	    !device_property_present(smb->dev, "inok-gpios"))
+		return 0;
+
+	/* INOK still reports VBUS when an unbound USB PHY cannot sense BSV. */
+	edev = devm_extcon_dev_allocate(smb->dev, cables);
+	if (IS_ERR(edev))
+		return PTR_ERR(edev);
+	ret = devm_extcon_dev_register(smb->dev, edev);
+	if (ret < 0)
+		return ret;
+	smb->vbus_edev = edev;
+	return extcon_set_state_sync(edev, EXTCON_USB, smb->usb_online);
 }
 
 static int smb347_irq_set(struct smb347_charger *smb, bool enable)
@@ -1925,6 +1956,11 @@ static int smb347_probe(struct i2c_client *client)
 	ret = smb347_irq_init(smb, client);
 	if (ret)
 		return ret;
+	ret = smb347_vbus_extcon_init(smb);
+	if (ret) {
+		smb347_irq_disable(smb);
+		return ret;
+	}
 	ret = smb347_inok_irq_init(smb);
 	if (ret) {
 		smb347_irq_disable(smb);

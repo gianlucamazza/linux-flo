@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <kunit/device.h>
 #include <kunit/test.h>
+#include <linux/extcon-provider.h>
 
 struct smb347_test_bus {
 	u8 regs[SMB347_MAX_REGISTER + 1];
@@ -78,6 +79,35 @@ static void smb347_config_read_tracks_chip_reset(struct kunit *test)
 	bus->regs[CFG_CURRENT_LIMIT] = 0x41;
 	KUNIT_ASSERT_EQ(test, regmap_read(map, CFG_CURRENT_LIMIT, &val), 0);
 	KUNIT_EXPECT_EQ(test, val, 0x41U);
+}
+
+static void smb347_input_notification_updates_usb_extcon(struct kunit *test)
+{
+	static const unsigned int cables[] = { EXTCON_USB, EXTCON_NONE };
+	struct smb347_charger smb = {};
+	struct device *dev;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_EXTCON)) {
+		kunit_skip(test, "EXTCON is disabled");
+		return;
+	}
+
+	dev = kunit_device_register(test, "smb347-vbus-extcon");
+	KUNIT_ASSERT_FALSE(test, IS_ERR(dev));
+	smb.dev = dev;
+	smb.vbus_edev = devm_extcon_dev_allocate(dev, cables);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(smb.vbus_edev));
+	ret = devm_extcon_dev_register(dev, smb.vbus_edev);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+
+	KUNIT_EXPECT_EQ(test, extcon_get_state(smb.vbus_edev, EXTCON_USB), 0);
+	smb.usb_online = true;
+	smb347_notify_input_change(&smb);
+	KUNIT_EXPECT_EQ(test, extcon_get_state(smb.vbus_edev, EXTCON_USB), 1);
+	smb.usb_online = false;
+	smb347_notify_input_change(&smb);
+	KUNIT_EXPECT_EQ(test, extcon_get_state(smb.vbus_edev, EXTCON_USB), 0);
 }
 
 static void smb347_command_update_uses_chip_state(struct kunit *test)
@@ -557,6 +587,7 @@ static void smb347_without_usb_supplier_preserves_pin_mode(struct kunit *test)
 }
 
 static struct kunit_case smb347_reset_cases[] = {
+	KUNIT_CASE(smb347_input_notification_updates_usb_extcon),
 	KUNIT_CASE(smb345_flo_usb_input_current_indices),
 	KUNIT_CASE(smb345_usb_source_policy_limits),
 	KUNIT_CASE(smb345_usb_source_policy_programs_chip),
