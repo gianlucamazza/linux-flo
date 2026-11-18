@@ -788,6 +788,45 @@ irqreturn_t ci_otg_fsm_irq(struct ci_hdrc *ci)
 	return retval;
 }
 
+void ci_otg_fsm_reconcile_inputs(struct ci_hdrc *ci)
+{
+	struct otg_fsm *fsm = &ci->fsm;
+	u32 otgsc = hw_read_otgsc(ci, OTGSC_ID | OTGSC_BSV | OTGSC_AVV);
+	bool id = !!(otgsc & OTGSC_ID);
+	bool bsv = !!(otgsc & OTGSC_BSV);
+	bool avv = !!(otgsc & OTGSC_AVV);
+	bool changed = false;
+
+	if (fsm->id != id) {
+		fsm->id = id;
+		changed = true;
+		if (!id) {
+			fsm->a_bus_drop = 0;
+			fsm->a_bus_req = 1;
+			ci->id_event = true;
+		}
+	}
+	if (fsm->b_sess_vld != bsv) {
+		fsm->b_sess_vld = bsv;
+		changed = true;
+		if (bsv) {
+			ci_otg_del_timer(ci, B_SSEND_SRP);
+			ci_otg_del_timer(ci, B_SRP_FAIL);
+			fsm->b_ssend_srp = 0;
+		} else if (id) {
+			ci_otg_add_timer(ci, B_SSEND_SRP);
+		}
+	}
+	if (fsm->a_vbus_vld != avv) {
+		fsm->a_vbus_vld = avv;
+		changed = true;
+		if (!avv)
+			fsm->b_conn = 0;
+	}
+	if (changed)
+		ci_otg_queue_work(ci);
+}
+
 void ci_hdrc_otg_fsm_start(struct ci_hdrc *ci)
 {
 	ci_otg_queue_work(ci);

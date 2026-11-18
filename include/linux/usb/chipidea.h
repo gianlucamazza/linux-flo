@@ -67,6 +67,7 @@ struct ci_hdrc_platform_data {
 #define CI_HDRC_FORCE_VBUS_ACTIVE_ALWAYS	BIT(18)
 #define	CI_HDRC_HAS_SHORT_PKT_LIMIT	BIT(19)
 #define	CI_HDRC_OUT_BAND_WAKEUP		BIT(20)
+#define CI_HDRC_REPORT_VBUS_WITHOUT_GADGET	BIT(21)
 	enum usb_dr_mode	dr_mode;
 #define CI_HDRC_CONTROLLER_RESET_EVENT		0
 #define CI_HDRC_CONTROLLER_STOPPED_EVENT	1
@@ -74,7 +75,10 @@ struct ci_hdrc_platform_data {
 #define CI_HDRC_IMX_HSIC_SUSPEND_EVENT		3
 #define CI_HDRC_CONTROLLER_VBUS_EVENT		4
 #define CI_HDRC_CONTROLLER_PULLUP_EVENT		5
+#define CI_HDRC_CONTROLLER_TRANSITION_START_EVENT	6
+#define CI_HDRC_CONTROLLER_TRANSITION_END_EVENT	7
 	int	(*notify_event) (struct ci_hdrc *ci, unsigned event);
+	int	(*set_vbus_draw)(struct ci_hdrc *ci, unsigned int milliamp);
 	struct regulator	*reg_vbus;
 	struct usb_otg_caps	ci_otg_caps;
 	bool			tpl_support;

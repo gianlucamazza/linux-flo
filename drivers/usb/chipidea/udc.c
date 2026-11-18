@@ -1864,23 +1864,47 @@ static int ci_udc_get_frame(struct usb_gadget *_gadget)
 /*
  * ci_hdrc_gadget_connect: caller makes sure gadget driver is binded
  */
-static void ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
+static int ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
 {
 	struct ci_hdrc *ci = container_of(_gadget, struct ci_hdrc, gadget);
+	int ret;
 
 	if (is_active) {
-		pm_runtime_get_sync(ci->dev);
-		hw_device_reset(ci);
 		spin_lock_irq(&ci->lock);
-		if (ci->driver) {
+		if (ci->gadget_pm_active) {
+			spin_unlock_irq(&ci->lock);
+			return 0;
+		}
+		spin_unlock_irq(&ci->lock);
+
+		if (ci->supports_runtime_pm) {
+			ret = pm_runtime_resume_and_get(ci->dev);
+			if (ret < 0)
+				return ret;
+		}
+		ret = hw_device_reset(ci);
+		if (ret)
+			goto stop_phy;
+		spin_lock_irq(&ci->lock);
+		if (ci->driver && ci->vbus_active) {
 			hw_device_state(ci, ci->ep0out->qh.dma);
+			ci->gadget_pm_active = true;
 			usb_gadget_set_state(_gadget, USB_STATE_POWERED);
 			spin_unlock_irq(&ci->lock);
 			usb_udc_vbus_handler(_gadget, true);
 		} else {
 			spin_unlock_irq(&ci->lock);
+			ret = -ENODEV;
+			goto stop_phy;
 		}
 	} else {
+		spin_lock_irq(&ci->lock);
+		if (!ci->gadget_pm_active) {
+			spin_unlock_irq(&ci->lock);
+			return 0;
+		}
+		ci->gadget_pm_active = false;
+		spin_unlock_irq(&ci->lock);
 		usb_udc_vbus_handler(_gadget, false);
 		if (ci->driver)
 			ci->driver->disconnect(&ci->gadget);
@@ -1889,9 +1913,18 @@ static void ci_hdrc_gadget_connect(struct usb_gadget *_gadget, int is_active)
 			ci->platdata->notify_event(ci,
 			CI_HDRC_CONTROLLER_STOPPED_EVENT);
 		_gadget_stop_activity(&ci->gadget);
-		pm_runtime_put_sync(ci->dev);
+		if (ci->supports_runtime_pm)
+			pm_runtime_put_sync(ci->dev);
 		usb_gadget_set_state(_gadget, USB_STATE_NOTATTACHED);
 	}
+	return 0;
+
+stop_phy:
+	if (ci->platdata->notify_event)
+		ci->platdata->notify_event(ci, CI_HDRC_CONTROLLER_STOPPED_EVENT);
+	if (ci->supports_runtime_pm)
+		pm_runtime_put_sync(ci->dev);
+	return ret;
 }
 
 static int ci_udc_vbus_session(struct usb_gadget *_gadget, int is_active)
@@ -1919,8 +1952,12 @@ static int ci_udc_vbus_session(struct usb_gadget *_gadget, int is_active)
 			usb_phy_set_event(ci->usb_phy, USB_EVENT_NONE);
 	}
 
-	if (ci->driver)
-		ci_hdrc_gadget_connect(_gadget, is_active);
+	if (ci->driver) {
+		int connect_ret = ci_hdrc_gadget_connect(_gadget, is_active);
+
+		if (!ret)
+			ret = connect_ret;
+	}
 
 	return ret;
 }
@@ -1956,6 +1993,8 @@ static int ci_udc_vbus_draw(struct usb_gadget *_gadget, unsigned ma)
 
 	if (ci->usb_phy)
 		return usb_phy_set_power(ci->usb_phy, ma);
+	if (ci->platdata->set_vbus_draw)
+		return ci->platdata->set_vbus_draw(ci, ma);
 	return -ENOTSUPP;
 }
 
@@ -2154,10 +2193,17 @@ static int ci_udc_start(struct usb_gadget *gadget,
 		return retval;
 	}
 
-	if (ci->vbus_active)
-		ci_hdrc_gadget_connect(gadget, 1);
-	else
+	if (ci->vbus_active) {
+		retval = ci_hdrc_gadget_connect(gadget, 1);
+		if (retval) {
+			ci->driver = NULL;
+			usb_ep_disable(&ci->ep0in->ep);
+			usb_ep_disable(&ci->ep0out->ep);
+			return retval;
+		}
+	} else {
 		usb_udc_vbus_handler(&ci->gadget, false);
+	}
 
 	return retval;
 }
@@ -2186,10 +2232,16 @@ static int ci_udc_stop(struct usb_gadget *gadget)
 	struct ci_hdrc *ci = container_of(gadget, struct ci_hdrc, gadget);
 	unsigned long flags;
 
+	if ((ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    ci->platdata->notify_event)
+		ci->platdata->notify_event(ci,
+			CI_HDRC_CONTROLLER_TRANSITION_START_EVENT);
+
 	spin_lock_irqsave(&ci->lock, flags);
 	ci->driver = NULL;
 
-	if (ci->vbus_active) {
+	if (ci->gadget_pm_active) {
+		ci->gadget_pm_active = false;
 		hw_device_state(ci, 0);
 		spin_unlock_irqrestore(&ci->lock, flags);
 		if (ci->platdata->notify_event)
@@ -2197,12 +2249,17 @@ static int ci_udc_stop(struct usb_gadget *gadget)
 			CI_HDRC_CONTROLLER_STOPPED_EVENT);
 		_gadget_stop_activity(&ci->gadget);
 		spin_lock_irqsave(&ci->lock, flags);
-		pm_runtime_put(ci->dev);
+		if (ci->supports_runtime_pm)
+			pm_runtime_put(ci->dev);
 	}
 
 	spin_unlock_irqrestore(&ci->lock, flags);
 
 	ci_udc_stop_for_otg_fsm(ci);
+	if ((ci->platdata->flags & CI_HDRC_REPORT_VBUS_WITHOUT_GADGET) &&
+	    ci->platdata->notify_event)
+		ci->platdata->notify_event(ci,
+			CI_HDRC_CONTROLLER_TRANSITION_END_EVENT);
 	return 0;
 }
 

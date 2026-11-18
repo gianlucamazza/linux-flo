@@ -23,7 +23,16 @@ properties:
   interrupts:
     maxItems: 1
 
+  inok-gpios:
+    maxItems: 1
+    description: |
+      Charger INOK input-presence signal, separate from the STAT interrupt.
+      When USB charging is enabled, the driver also publishes this input
+      state as an EXTCON_USB cable for a USB controller's VBUS detection.
+
   monitored-battery: true
+
+  power-supplies: true
 
   summit,enable-usb-charging:
     type: boolean
@@ -96,9 +105,25 @@ allOf:
   - if:
       properties:
         compatible:
-          enum:
-            - summit,smb345
-            - summit,smb358
+          const: summit,smb345
+
+    then:
+      properties:
+        summit,mains-current-limit-microamp:
+          enum: [ 300000, 500000, 700000, 900000, 1200000,
+                  1500000, 1800000, 2000000]
+
+        summit,usb-current-limit-microamp:
+          enum: [ 300000, 500000, 700000, 900000, 1200000,
+                  1500000, 1800000, 2000000]
+
+        summit,charge-current-compensation-microamp:
+          enum: [200000, 450000, 600000, 900000]
+
+  - if:
+      properties:
+        compatible:
+          const: summit,smb358
 
     then:
       properties:
@@ -113,7 +138,12 @@ allOf:
         summit,charge-current-compensation-microamp:
           enum: [200000, 450000, 600000, 900000]
 
-    else:
+  - if:
+      properties:
+        compatible:
+          const: summit,smb347
+
+    then:
       properties:
         summit,mains-current-limit-microamp:
           enum: [ 300000, 500000, 700000, 900000, 1200000,
