@@ -5,6 +5,18 @@
 
 menu "Misc devices"
 
+config FLO_TABLA_DISCOVERY
+	tristate "Flo tabla SLIMbus codec discovery"
+	depends on (OF && SLIMBUS && REGULATOR && GPIOLIB) || (KUNIT && COMPILE_TEST)
+	help
+	  Manual, default-off power sequencing to discover the tabla SLIMbus
+	  enumeration address on the ASUS Nexus 7 flo. No audio path is enabled.
+
+config FLO_TABLA_DISCOVERY_TEST
+	tristate "Flo tabla discovery power sequence tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT && FLO_TABLA_DISCOVERY
+	default KUNIT_ALL_TESTS
+
 config SENSORS_LIS3LV02D
 	tristate
 	depends on INPUT
