@@ -25,7 +25,10 @@ properties:
 
   inok-gpios:
     maxItems: 1
-    description: Charger INOK input-presence signal, separate from the STAT interrupt.
+    description: |
+      Charger INOK input-presence signal, separate from the STAT interrupt.
+      When USB charging is enabled, the driver also publishes this input
+      state as an EXTCON_USB cable for a USB controller's VBUS detection.
 
   monitored-battery: true
 
