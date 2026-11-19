@@ -520,18 +520,28 @@ static u64 a3xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
 
 static int a3xx_vbif_halt(struct msm_gpu *gpu)
 {
-	u32 ack;
+	u32 ack, request;
 	int ret;
 
 	gpu_write(gpu, REG_A3XX_VBIF_XIN_HALT_CTRL0,
 		  A3XX_VBIF_XIN_HALT_CTRL0_MASK);
+	request = gpu_read(gpu, REG_A3XX_VBIF_XIN_HALT_CTRL0);
 	ret = spin_until(((ack = gpu_read(gpu, REG_A3XX_VBIF_XIN_HALT_CTRL1)) &
 			  A3XX_VBIF_XIN_HALT_CTRL0_MASK) ==
 			 A3XX_VBIF_XIN_HALT_CTRL0_MASK);
 	gpu_write(gpu, REG_A3XX_VBIF_XIN_HALT_CTRL0, 0);
 
-	if (ret)
+	if (ret) {
+		DRM_DEV_ERROR(gpu->dev->dev,
+			"VBIF halt timed out: request=%#x ack=%#x mask=%#lx\n",
+			request, ack, A3XX_VBIF_XIN_HALT_CTRL0_MASK);
+		DRM_DEV_ERROR(gpu->dev->dev,
+			"VBIF diagnostic: needs_hw_init=%d rbbm=%#x vbif_clkon=%#x\n",
+			gpu->needs_hw_init,
+			gpu_read(gpu, REG_A3XX_RBBM_STATUS),
+			gpu_read(gpu, REG_A3XX_VBIF_CLKON));
 		return -EBUSY;
+	}
 
 	return 0;
 }
