@@ -524,6 +524,9 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 
 static void mmci_dma_release(struct mmci_host *host)
 {
+	if (!host->use_dma)
+		return;
+
 	if (host->ops && host->ops->dma_release)
 		host->ops->dma_release(host);
 
@@ -591,12 +594,9 @@ static void mmci_unprep_data(struct mmci_host *host, struct mmc_data *data,
 	data->host_cookie = 0;
 }
 
-static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
+static void mmci_check_data_cookie(struct mmci_host *host, struct mmc_data *data)
 {
 	WARN_ON(data->host_cookie && data->host_cookie != host->next_cookie);
-
-	if (host->ops && host->ops->get_next_data)
-		host->ops->get_next_data(host, data);
 }
 
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
@@ -660,6 +660,12 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 	writel(0, host->base + MMCICOMMAND);
 
 	BUG_ON(host->data);
+
+	/* The request and its streaming mappings must survive DMA termination. */
+	if (host->dma_abort_pending) {
+		host->irq_action = IRQ_WAKE_THREAD;
+		return;
+	}
 
 	host->mrq = NULL;
 	host->cmd = NULL;
@@ -854,17 +860,14 @@ out_ret_state:
  * no custom DMA interfaces are supported.
  */
 #ifdef CONFIG_DMA_ENGINE
-struct mmci_dmae_next {
-	struct dma_async_tx_descriptor *desc;
-	struct dma_chan	*chan;
-};
-
 struct mmci_dmae_priv {
 	struct dma_chan	*cur;
 	struct dma_chan	*rx_channel;
 	struct dma_chan	*tx_channel;
 	struct dma_async_tx_descriptor	*desc_current;
-	struct mmci_dmae_next next_data;
+	struct mmc_data	*data_current;
+	int abort_error;
+	bool broken;
 };
 
 int mmci_dmae_setup(struct mmci_host *host)
@@ -951,7 +954,7 @@ void mmci_dmae_release(struct mmci_host *host)
 
 	if (dmae->rx_channel)
 		dma_release_channel(dmae->rx_channel);
-	if (dmae->tx_channel)
+	if (dmae->tx_channel && dmae->tx_channel != dmae->rx_channel)
 		dma_release_channel(dmae->tx_channel);
 	dmae->rx_channel = dmae->tx_channel = NULL;
 }
@@ -961,6 +964,9 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct dma_chan *chan;
 
+	if (!data->sg_count)
+		return;
+
 	if (data->flags & MMC_DATA_READ)
 		chan = dmae->rx_channel;
 	else
@@ -968,6 +974,8 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 
 	dma_unmap_sg(chan->device->dev, data->sg, data->sg_len,
 		     mmc_get_dma_dir(data));
+	data->sg_count = 0;
+	data->host_cookie = 0;
 }
 
 void mmci_dmae_error(struct mmci_host *host)
@@ -978,13 +986,34 @@ void mmci_dmae_error(struct mmci_host *host)
 		return;
 
 	dev_err(mmc_dev(host->mmc), "error during DMA transfer!\n");
-	dmaengine_terminate_all(dmae->cur);
+	/* BAM requires its attached engine to stop before the pipe is reset. */
+	mmci_write_datactrlreg(host, 0);
+	readl(host->base + MMCIDATACTRL);
 	host->dma_in_progress = false;
+	host->dma_abort_pending = true;
+	dmae->abort_error = dmaengine_terminate_async(dmae->cur);
+}
+
+int mmci_dmae_sync(struct mmci_host *host)
+{
+	struct mmci_dmae_priv *dmae = host->dma_priv;
+
+	if (!host->dma_abort_pending)
+		return 0;
+
+	/* Retry a failed stop; never unmap or complete an unquiesced transfer. */
+	if (dmae->abort_error) {
+		dmae->abort_error = dmaengine_terminate_async(dmae->cur);
+		if (dmae->abort_error)
+			return dmae->abort_error;
+	}
+	dmaengine_synchronize(dmae->cur);
+	mmci_dma_unmap(host, dmae->data_current);
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
-	host->data->host_cookie = 0;
-
-	mmci_dma_unmap(host, host->data);
+	dmae->data_current = NULL;
+	host->dma_abort_pending = false;
+	return 0;
 }
 
 void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
@@ -1019,23 +1048,24 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 	}
 
 	/*
-	 * Use of DMA with scatter-gather is impossible.
-	 * Give up with DMA and switch back to PIO mode.
+	 * Keep channel references alive for all outstanding streaming mappings.
+	 * The existing broken-DMA fallback uses PIO until device removal, where
+	 * channels can safely be released after the IRQs have been detached.
 	 */
 	if (status & MCI_RXDATAAVLBLMASK) {
-		dev_err(mmc_dev(host->mmc), "buggy DMA detected. Taking evasive action.\n");
-		mmci_dma_release(host);
+		dev_err(mmc_dev(host->mmc), "buggy DMA detected; disabling new DMA transfers\n");
+		WRITE_ONCE(dmae->broken, true);
+		return;
 	}
 
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
+	dmae->data_current = NULL;
 }
 
-/* prepares DMA channel and DMA descriptor, returns non-zero on failure */
-static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
-				struct dma_chan **dma_chan,
-				struct dma_async_tx_descriptor **dma_desc)
+/* Pre-map SGs early, but configure and prepare DMA only for the active request. */
+int mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data, bool next)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct variant_data *variant = host->variant;
@@ -1051,7 +1081,7 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	struct dma_chan *chan;
 	struct dma_device *device;
 	struct dma_async_tx_descriptor *desc;
-	int nr_sg;
+	int nr_sg, ret;
 	unsigned long flags = DMA_CTRL_ACK;
 
 	if (data->flags & MMC_DATA_READ) {
@@ -1060,6 +1090,14 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	} else {
 		conf.direction = DMA_MEM_TO_DEV;
 		chan = dmae->tx_channel;
+	}
+
+	if (!host->use_dma)
+		return -EINVAL;
+	if (READ_ONCE(dmae->broken)) {
+		if (!next)
+			mmci_dma_unmap(host, data);
+		return -EINVAL;
 	}
 
 	/* If there's no DMA channel, fall back to PIO */
@@ -1083,50 +1121,41 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		return -EINVAL;
 
 	device = chan->device;
-	nr_sg = dma_map_sg(device->dev, data->sg, data->sg_len,
-			   mmc_get_dma_dir(data));
-	if (nr_sg == 0)
-		return -EINVAL;
+	nr_sg = data->sg_count;
+	if (!nr_sg) {
+		nr_sg = dma_map_sg(device->dev, data->sg, data->sg_len,
+				   mmc_get_dma_dir(data));
+		if (!nr_sg)
+			return -EINVAL;
+		data->sg_count = nr_sg;
+	}
+
+	/* pre_req may overlap an active transfer on this same DMA channel. */
+	if (next)
+		return 0;
 
 	if (host->variant->qcom_dml)
 		flags |= DMA_PREP_INTERRUPT;
 
-	dmaengine_slave_config(chan, &conf);
+	ret = dmaengine_slave_config(chan, &conf);
+	if (ret)
+		goto unmap_exit;
 	desc = dmaengine_prep_slave_sg(chan, data->sg, nr_sg,
 					    conf.direction, flags);
-	if (!desc)
+	if (!desc) {
+		ret = -ENOMEM;
 		goto unmap_exit;
+	}
 
-	*dma_chan = chan;
-	*dma_desc = desc;
+	dmae->cur = chan;
+	dmae->desc_current = desc;
+	dmae->data_current = data;
 
 	return 0;
 
  unmap_exit:
-	dma_unmap_sg(device->dev, data->sg, data->sg_len,
-		     mmc_get_dma_dir(data));
-	return -ENOMEM;
-}
-
-int mmci_dmae_prep_data(struct mmci_host *host,
-			struct mmc_data *data,
-			bool next)
-{
-	struct mmci_dmae_priv *dmae = host->dma_priv;
-	struct mmci_dmae_next *nd = &dmae->next_data;
-
-	if (!host->use_dma)
-		return -EINVAL;
-
-	if (next)
-		return _mmci_dmae_prep_data(host, data, &nd->chan, &nd->desc);
-	/* Check if next job is already prepared. */
-	if (dmae->cur && dmae->desc_current)
-		return 0;
-
-	/* No job were prepared thus do it now. */
-	return _mmci_dmae_prep_data(host, data, &dmae->cur,
-				    &dmae->desc_current);
+	mmci_dma_unmap(host, data);
+	return ret;
 }
 
 int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
@@ -1134,10 +1163,14 @@ int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	int ret;
 
+	if (host->dma_abort_pending)
+		return -EBUSY;
+
 	host->dma_in_progress = true;
 	ret = dma_submit_error(dmaengine_submit(dmae->desc_current));
 	if (ret < 0) {
-		host->dma_in_progress = false;
+		/* Even a rejected descriptor needs process-context teardown. */
+		mmci_dmae_error(host);
 		return ret;
 	}
 	dma_async_issue_pending(dmae->cur);
@@ -1147,65 +1180,23 @@ int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
 	return 0;
 }
 
-void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
-{
-	struct mmci_dmae_priv *dmae = host->dma_priv;
-	struct mmci_dmae_next *next = &dmae->next_data;
-
-	if (!host->use_dma)
-		return;
-
-	WARN_ON(!data->host_cookie && (next->desc || next->chan));
-
-	dmae->desc_current = next->desc;
-	dmae->cur = next->chan;
-	next->desc = NULL;
-	next->chan = NULL;
-}
-
 void mmci_dmae_unprep_data(struct mmci_host *host,
 			   struct mmc_data *data, int err)
-
 {
-	struct mmci_dmae_priv *dmae = host->dma_priv;
-
-	if (!host->use_dma)
-		return;
-
+	/* No unsubmitted descriptors exist for pre-mapped requests. */
 	mmci_dma_unmap(host, data);
-
-	if (err) {
-		struct mmci_dmae_next *next = &dmae->next_data;
-		struct dma_chan *chan;
-		if (data->flags & MMC_DATA_READ)
-			chan = dmae->rx_channel;
-		else
-			chan = dmae->tx_channel;
-		dmaengine_terminate_all(chan);
-
-		if (dmae->desc_current == next->desc)
-			dmae->desc_current = NULL;
-
-		if (dmae->cur == next->chan) {
-			host->dma_in_progress = false;
-			dmae->cur = NULL;
-		}
-
-		next->desc = NULL;
-		next->chan = NULL;
-	}
 }
 
 static struct mmci_host_ops mmci_variant_ops = {
 	.prep_data = mmci_dmae_prep_data,
 	.unprep_data = mmci_dmae_unprep_data,
 	.get_datactrl_cfg = mmci_get_dctrl_cfg,
-	.get_next_data = mmci_dmae_get_next_data,
 	.dma_setup = mmci_dmae_setup,
 	.dma_release = mmci_dmae_release,
 	.dma_start = mmci_dmae_start,
 	.dma_finalize = mmci_dmae_finalize,
 	.dma_error = mmci_dmae_error,
+	.dma_sync = mmci_dmae_sync,
 };
 #else
 static struct mmci_host_ops mmci_variant_ops = {
@@ -1259,11 +1250,12 @@ static void mmci_post_request(struct mmc_host *mmc, struct mmc_request *mrq,
 	mmci_unprep_data(host, data, err);
 }
 
-static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
+static bool mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 {
 	struct variant_data *variant = host->variant;
 	unsigned int datactrl, timeout, irqmask;
 	unsigned long long clks;
+	int ret;
 	void __iomem *base;
 
 	dev_dbg(mmc_dev(host->mmc), "blksz %04x blks %04x flags %08x\n",
@@ -1314,8 +1306,15 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	 * Attempt to use DMA operation mode, if this
 	 * should fail, fall back to PIO mode
 	 */
-	if (!mmci_dma_start(host, datactrl))
-		return;
+	ret = mmci_dma_start(host, datactrl);
+	if (!ret)
+		return true;
+	if (host->dma_abort_pending) {
+		data->error = ret;
+		mmci_stop_data(host);
+		mmci_request_end(host, data->mrq);
+		return false;
+	}
 
 	/* IRQ mode, map the SG list for CPU reading/writing */
 	mmci_init_sg(host, data);
@@ -1341,6 +1340,7 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	mmci_write_datactrlreg(host, datactrl);
 	writel(readl(base + MMCIMASK0) & ~MCI_DATAENDMASK, base + MMCIMASK0);
 	mmci_set_mask1(host, irqmask);
+	return true;
 }
 
 static void
@@ -1536,6 +1536,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 		 * This will wake up mmci_irq_thread() which will issue
 		 * a hardware reset of the MMCI block.
 		 */
+		host->busy_reset_pending = true;
 		host->irq_action = IRQ_WAKE_THREAD;
 	} else {
 		cmd->resp[0] = readl(base + MMCIRESPONSE0);
@@ -1586,6 +1587,13 @@ static char *ux500_state_str(struct mmci_host *host)
  * busy detect IRQ fails to appear in reasonable time. Only used on
  * variants with busy detection IRQ delivery.
  */
+static void mmci_mask_for_irq_thread(struct mmci_host *host)
+{
+	host->irq_mask_saved = readl(host->base + MMCIMASK0);
+	writel(0, host->base + MMCIMASK0);
+	host->irq_thread_pending = true;
+}
+
 static void ux500_busy_timeout_work(struct work_struct *work)
 {
 	struct mmci_host *host = container_of(work, struct mmci_host,
@@ -1610,6 +1618,10 @@ static void ux500_busy_timeout_work(struct work_struct *work)
 		}
 
 		mmci_cmd_irq(host, host->cmd, status);
+		if (host->irq_action == IRQ_WAKE_THREAD) {
+			mmci_mask_for_irq_thread(host);
+			irq_wake_thread(host->irq, host);
+		}
 	}
 
 	spin_unlock_irqrestore(&host->lock, flags);
@@ -1820,6 +1832,10 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 	u32 status;
 
 	spin_lock(&host->lock);
+	if (host->irq_thread_pending) {
+		spin_unlock(&host->lock);
+		return IRQ_NONE;
+	}
 	host->irq_action = IRQ_HANDLED;
 
 	do {
@@ -1865,6 +1881,10 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 		if (host->variant->busy_detect_flag)
 			status &= ~host->variant->busy_detect_flag;
 
+		if (host->irq_action == IRQ_WAKE_THREAD) {
+			mmci_mask_for_irq_thread(host);
+			break;
+		}
 	} while (status);
 
 	spin_unlock(&host->lock);
@@ -1872,34 +1892,46 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 	return host->irq_action;
 }
 
-/*
- * mmci_irq_thread() - A threaded IRQ handler that manages a reset of the HW.
- *
- * A reset is needed for some variants, where a datatimeout for a R1B request
- * causes the DPSM to stay busy (non-functional).
- */
+/* Synchronize DMA termination and perform variant-specific R1B resets. */
 static irqreturn_t mmci_irq_thread(int irq, void *dev_id)
 {
 	struct mmci_host *host = dev_id;
 	unsigned long flags;
+	bool reset = host->busy_reset_pending;
+	int ret;
 
-	if (host->rst) {
+	/* Completion is held back, and this controller's IRQs are masked. */
+	if (host->dma_abort_pending) {
+		ret = host->ops->dma_sync ? host->ops->dma_sync(host) : -EINVAL;
+		if (ret) {
+			dev_err(mmc_dev(host->mmc),
+				"DMA stop failed (%d); retaining request and mappings\n", ret);
+			return IRQ_HANDLED;
+		}
+	}
+
+	if (reset && host->rst) {
 		reset_control_assert(host->rst);
 		udelay(2);
 		reset_control_deassert(host->rst);
 	}
 
 	spin_lock_irqsave(&host->lock, flags);
-	writel(host->clk_reg, host->base + MMCICLOCK);
-	writel(host->pwr_reg, host->base + MMCIPOWER);
-	writel(MCI_IRQENABLE | host->variant->start_err,
-	       host->base + MMCIMASK0);
-
+	if (reset) {
+		writel(host->clk_reg, host->base + MMCICLOCK);
+		writel(host->pwr_reg, host->base + MMCIPOWER);
+		writel(MCI_IRQENABLE | host->variant->start_err,
+		       host->base + MMCIMASK0);
+	} else {
+		writel(host->irq_mask_saved, host->base + MMCIMASK0);
+	}
+	host->busy_reset_pending = false;
+	host->irq_thread_pending = false;
 	host->irq_action = IRQ_HANDLED;
 	mmci_request_end(host, host->mrq);
 	spin_unlock_irqrestore(&host->lock, flags);
 
-	return host->irq_action;
+	return IRQ_HANDLED;
 }
 
 static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
@@ -1920,11 +1952,16 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	host->mrq = mrq;
 
 	if (mrq->data)
-		mmci_get_next_data(host, mrq->data);
+		mmci_check_data_cookie(host, mrq->data);
 
 	if (mrq->data &&
-	    (host->variant->datactrl_first || mrq->data->flags & MMC_DATA_READ))
-		mmci_start_data(host, mrq->data);
+	    (host->variant->datactrl_first || mrq->data->flags & MMC_DATA_READ) &&
+	    !mmci_start_data(host, mrq->data)) {
+		mmci_mask_for_irq_thread(host);
+		spin_unlock_irqrestore(&host->lock, flags);
+		irq_wake_thread(host->irq, host);
+		return;
+	}
 
 	if (mrq->sbc)
 		mmci_start_command(host, mrq->sbc, 0);
@@ -2478,6 +2515,7 @@ static int mmci_probe(struct amba_device *dev,
 			goto clk_disable;
 	}
 
+	host->irq = dev->irq[0];
 	ret = devm_request_threaded_irq(&dev->dev, dev->irq[0], mmci_irq,
 					mmci_irq_thread, IRQF_SHARED,
 					DRIVER_NAME " (cmd)", host);
@@ -2512,8 +2550,14 @@ static int mmci_probe(struct amba_device *dev,
 	pm_runtime_use_autosuspend(&dev->dev);
 
 	ret = mmc_add_host(mmc);
-	if (ret)
+	if (ret) {
+		writel(0, host->base + MMCIMASK0);
+		devm_free_irq(&dev->dev, dev->irq[0], host);
+		if (dev->irq[1])
+			devm_free_irq(&dev->dev, dev->irq[1], host);
+		mmci_dma_release(host);
 		goto clk_disable;
+	}
 
 	pm_runtime_put(&dev->dev);
 	return 0;
@@ -2547,6 +2591,9 @@ static void mmci_remove(struct amba_device *dev)
 		writel(0, host->base + MMCICOMMAND);
 		writel(0, host->base + MMCIDATACTRL);
 
+		devm_free_irq(&dev->dev, dev->irq[0], host);
+		if (dev->irq[1])
+			devm_free_irq(&dev->dev, dev->irq[1], host);
 		mmci_dma_release(host);
 		clk_disable_unprepare(host->clk);
 	}
@@ -2722,3 +2769,7 @@ module_param(fmax, uint, 0444);
 
 MODULE_DESCRIPTION("ARM PrimeCell PL180/181 Multimedia Card Interface driver");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_MMC_ARMMMCI_KUNIT_TEST)
+#include "mmci-test.c"
+#endif

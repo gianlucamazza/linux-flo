@@ -251,6 +251,13 @@ static int wcn36xx_start(struct ieee80211_hw *hw)
 			wcn36xx_feat_caps_info(wcn);
 	}
 
+	/* The flo 1.4.1.2 firmware advertises scan offload but does not
+	 * answer UPDATE_CHANNEL_LIST or START_SCAN_OFFLOAD. Use mac80211's
+	 * software scan path for this firmware revision instead.
+	 */
+	if (wcn36xx_is_fw_version(wcn, 1, 4, 1, 2))
+		wcn36xx_firmware_clear_feat_caps(wcn->fw_feat_caps, SCAN_OFFLOAD);
+
 	/* DMA channel initialization */
 	ret = wcn36xx_dxe_init(wcn);
 	if (ret) {

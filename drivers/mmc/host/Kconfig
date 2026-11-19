@@ -33,6 +33,19 @@ config MMC_ARMMMCI
 
 	  If unsure, say N.
 
+config MMC_ARMMMCI_KUNIT_TEST
+	bool "KUnit tests for MMCI DMA request handover" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && MMC=y && DMADEVICES && HAS_IOMEM
+	select ARM_AMBA
+	select MMC_ARMMMCI
+	select DMA_ENGINE
+	default KUNIT_ALL_TESTS
+	help
+	  Test streaming DMA mapping ownership across pipelined block requests,
+	  synchronous commands and cancellation. The tests use a recording
+	  DMAengine provider and simulated MMIO, without starting real hardware.
+	  Say N unless you are developing the MMCI DMA lifecycle.
+
 config MMC_QCOM_DML
 	bool "Qualcomm Data Mover for SD Card Controller"
 	depends on MMC_ARMMMCI && QCOM_BAM_DMA

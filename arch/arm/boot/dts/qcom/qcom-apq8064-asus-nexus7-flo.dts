@@ -2,6 +2,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/power/summit,smb347-charger.h>
 
 #include "qcom-apq8064-v2.0.dtsi"
 #include "pm8821.dtsi"
@@ -78,6 +79,14 @@
 			};
 		};
 	};
+
+	/*
+	 * The charger driver needs a battery reference to probe. No charge
+	 * limits are given, so the values programmed in the SMB345 are kept.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+	};
 };
 
 &dsi0 {
@@ -140,6 +149,22 @@
 		reg = <0x55>;
 	};
 
+	/*
+	 * Battery charger fed from the micro-USB connector. Current and
+	 * voltage limits are left at the values programmed in the chip.
+	 */
+	charger@6a {
+		compatible = "summit,smb345";
+		reg = <0x6a>;
+
+		summit,enable-charge-control = <SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW>;
+		summit,inok-polarity = <SMB3XX_SYSOK_INOK_ACTIVE_LOW>;
+		summit,enable-usb-charging;
+		/* DCP/CDP: the bootloader default of 500 mA cannot power the tablet */
+		summit,usb-current-limit-microamp = <1500000>;
+
+		monitored-battery = <&battery>;
+	};
 };
 
 &gsbi3 {
@@ -152,7 +177,13 @@
 	status = "okay";
 
 	trackpad@10 {
-		compatible = "elan,ekth3500";
+		compatible = "elan,ektf3624";
+		touchscreen-size-x = <2240>;
+		touchscreen-size-y = <1344>;
+		touchscreen-x-mm = <94>;
+		touchscreen-y-mm = <151>;
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
 		reg = <0x10>;
 		interrupt-parent = <&tlmm_pinmux>;
 		interrupts = <6 IRQ_TYPE_EDGE_FALLING>;
@@ -220,6 +251,26 @@
 			regulator-max-microvolt = <1225000>;
 			qcom,switch-mode-frequency = <3200000>;
 			bias-pull-down;
+		};
+
+		/* WCN3660 radio supplies; values from the flo board data. */
+		pm8921_s2: s2 {
+			regulator-min-microvolt = <1300000>;
+			regulator-max-microvolt = <1300000>;
+			qcom,switch-mode-frequency = <1600000>;
+		};
+
+		pm8921_l10: l10 {
+			regulator-min-microvolt = <2900000>;
+			regulator-max-microvolt = <2900000>;
+		};
+
+		pm8921_l24: l24 {
+			regulator-min-microvolt = <750000>;
+			regulator-max-microvolt = <1150000>;
+		};
+
+		pm8921_lvs2: lvs2 {
 		};
 
 		/* msm otg HSUSB_VDDCX */
@@ -336,9 +387,15 @@
 		/*
 		 * mipi_dsi.1-dsi1_vddio
 		 * pil_riva-pll_vdd
+		 *
+		 * Also the 1.8 V supply of the Krait CPU and L2 HFPLLs: the
+		 * downstream kernel keeps it on with "krait*_hfpll" and
+		 * "l2_hfpll" votes. Nothing votes for those here, so do not let
+		 * the display turn it off while the CPUs run from the HFPLLs.
 		 */
 		pm8921_lvs7: lvs7 {
 			bias-pull-down;
+			regulator-always-on;
 		};
 	};
 };
@@ -367,5 +424,22 @@
 		function = "normal";
 		bias-disable;
 		qcom,no-inversion;
+	};
+};
+
+/* Qualcomm WCN3660 Wi-Fi. */
+&riva {
+	pinctrl-names = "default";
+	pinctrl-0 = <&riva_wlan_pin_a>;
+	vddcx-supply = <&pm8921_s3>;
+	vddmx-supply = <&pm8921_l24>;
+	vddpx-supply = <&pm8921_s4>;
+	status = "okay";
+
+	iris {
+		vddxo-supply = <&pm8921_l4>;
+		vddrfa-supply = <&pm8921_s2>;
+		vddpa-supply = <&pm8921_l10>;
+		vdddig-supply = <&pm8921_lvs2>;
 	};
 };

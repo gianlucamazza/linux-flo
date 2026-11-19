@@ -394,12 +394,12 @@ struct mmci_host_ops {
 	void (*unprep_data)(struct mmci_host *host, struct mmc_data *data,
 			    int err);
 	u32 (*get_datactrl_cfg)(struct mmci_host *host);
-	void (*get_next_data)(struct mmci_host *host, struct mmc_data *data);
 	int (*dma_setup)(struct mmci_host *host);
 	void (*dma_release)(struct mmci_host *host);
 	int (*dma_start)(struct mmci_host *host, unsigned int *datactrl);
 	void (*dma_finalize)(struct mmci_host *host, struct mmc_data *data);
 	void (*dma_error)(struct mmci_host *host);
+	int (*dma_sync)(struct mmci_host *host);
 	void (*set_clkreg)(struct mmci_host *host, unsigned int desired);
 	void (*set_pwrreg)(struct mmci_host *host, unsigned int pwr);
 	bool (*busy_complete)(struct mmci_host *host, struct mmc_command *cmd, u32 status, u32 err_msk);
@@ -449,7 +449,12 @@ struct mmci_host {
 
 	struct timer_list	timer;
 	unsigned int		oldstat;
+	int			irq;
 	u32			irq_action;
+	u32			irq_mask_saved;
+	bool			irq_thread_pending;
+	bool			busy_reset_pending;
+	bool			dma_abort_pending;
 
 	/* pio stuff */
 	struct sg_mapping_iter	sg_miter;
@@ -479,12 +484,12 @@ int mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 			bool next);
 void mmci_dmae_unprep_data(struct mmci_host *host, struct mmc_data *data,
 			   int err);
-void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data);
 int mmci_dmae_setup(struct mmci_host *host);
 void mmci_dmae_release(struct mmci_host *host);
 int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl);
 void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data);
 void mmci_dmae_error(struct mmci_host *host);
+int mmci_dmae_sync(struct mmci_host *host);
 #endif
 
 #ifdef CONFIG_MMC_QCOM_DML

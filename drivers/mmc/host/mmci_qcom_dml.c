@@ -189,12 +189,12 @@ static struct mmci_host_ops qcom_variant_ops = {
 	.prep_data = mmci_dmae_prep_data,
 	.unprep_data = mmci_dmae_unprep_data,
 	.get_datactrl_cfg = qcom_get_dctrl_cfg,
-	.get_next_data = mmci_dmae_get_next_data,
 	.dma_setup = qcom_dma_setup,
 	.dma_release = mmci_dmae_release,
 	.dma_start = qcom_dma_start,
 	.dma_finalize = mmci_dmae_finalize,
 	.dma_error = mmci_dmae_error,
+	.dma_sync = mmci_dmae_sync,
 };
 
 void qcom_variant_init(struct mmci_host *host)

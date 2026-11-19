@@ -67,6 +67,17 @@ static int jdi_panel_init(struct jdi_panel *jdi)
 	 */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x24);
 
+	/*
+	 * The soft reset above puts the brightness register back to its
+	 * default. Program the requested level here, in LP mode with the rest
+	 * of the init sequence, instead of relying on the HS write that
+	 * backlight_enable() sends while the video stream is starting. The
+	 * backlight is still marked off here, so use the stored level.
+	 */
+	if (jdi->backlight)
+		mipi_dsi_dcs_write_var_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+						 (u8)jdi->backlight->props.brightness);
+
 	/* CABC off */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, 0x00);
 
@@ -118,6 +129,13 @@ static int jdi_panel_disable(struct drm_panel *panel)
 
 	backlight_disable(jdi->backlight);
 
+	/*
+	 * Send display off and sleep in while the host still runs the video
+	 * stream. Once the stream is stopped the DSI command engine waits for
+	 * a video-done interrupt that never comes and both commands time out.
+	 */
+	jdi_panel_off(jdi);
+
 	return 0;
 }
 
@@ -126,8 +144,6 @@ static int jdi_panel_unprepare(struct drm_panel *panel)
 	struct jdi_panel *jdi = to_jdi_panel(panel);
 	struct device *dev = &jdi->dsi->dev;
 	int ret;
-
-	jdi_panel_off(jdi);
 
 	ret = regulator_bulk_disable(ARRAY_SIZE(jdi->supplies), jdi->supplies);
 	if (ret < 0)
@@ -243,34 +259,36 @@ static int jdi_panel_get_modes(struct drm_panel *panel,
 static int dsi_dcs_bl_get_brightness(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
+	unsigned long mode_flags = dsi->mode_flags;
+	u8 brightness;
 	int ret;
-	u16 brightness = bl->props.brightness;
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-
-	ret = mipi_dsi_dcs_get_display_brightness(dsi, &brightness);
+	ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS,
+				&brightness, sizeof(brightness));
+	dsi->mode_flags = mode_flags;
 	if (ret < 0)
 		return ret;
+	if (ret != sizeof(brightness))
+		return -EIO;
 
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-
-	return brightness & 0xff;
+	return brightness;
 }
 
 static int dsi_dcs_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
+	unsigned long mode_flags = dsi->mode_flags;
+	u8 brightness = bl->props.brightness;
 	int ret;
 
+	/* This panel implements an 8-bit DCS brightness register (0x51). */
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+				 &brightness, sizeof(brightness));
+	dsi->mode_flags = mode_flags;
 
-	ret = mipi_dsi_dcs_set_display_brightness(dsi, bl->props.brightness);
-	if (ret < 0)
-		return ret;
-
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 static const struct backlight_ops dsi_bl_ops = {
@@ -375,6 +393,7 @@ static int jdi_panel_probe(struct mipi_dsi_device *dsi)
 	mipi_dsi_set_drvdata(dsi, jdi);
 
 	jdi->dsi = dsi;
+	jdi->base.prepare_prev_first = true;
 
 	ret = jdi_panel_add(jdi);
 	if (ret < 0)
@@ -416,3 +435,7 @@ MODULE_AUTHOR("Sumit Semwal <sumit.semwal@linaro.org>");
 MODULE_AUTHOR("Vinay Simha BN <simhavcs@gmail.com>");
 MODULE_DESCRIPTION("JDI LT070ME05000 WUXGA");
 MODULE_LICENSE("GPL v2");
+
+#if IS_ENABLED(CONFIG_DRM_PANEL_JDI_LT070ME05000_KUNIT_TEST)
+#include "panel-jdi-lt070me05000-test.c"
+#endif
